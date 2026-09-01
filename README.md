@@ -27,8 +27,14 @@ A tiny file, a big view. Pico Peaks is a fully procedural survival sandbox runni
 # Linux release binary (build/pico-peaks-1.0.0)
 godot --headless --path . --export-release "Linux x86_64" build/pico-peaks-1.0.0
 
+# Windows release exe (build/pico-peaks-1.0.0.exe)
+godot --headless --path . --export-release "Windows Desktop" build/pico-peaks-1.0.0.exe
+
 # Android APK (debug-signed, sideload-ready)
 godot --headless --path . --export-debug "Android" build/pico-peaks-android.apk
+
+# iOS Xcode project (final .ipa requires macOS + Xcode + an Apple Developer account)
+godot --headless --path . --export-debug "iOS" build/pico-peaks-ios
 ```
 
 Or run `./build_release.sh`, which does both.

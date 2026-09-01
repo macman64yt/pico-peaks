@@ -2,13 +2,17 @@
 
 Current release: **1.0.0**
 
-Builds: **Windows x86_64 (.exe)** · **Linux x86_64** · **Android (APK)**
+Builds: **Windows x86_64 (.exe)** · **Linux x86_64** · **Android (APK)** · **iOS (Xcode project — needs macOS to produce .ipa)**
 
 ## What's new in 1.0.0
 
 - **Windows + Linux desktop builds** — single self-contained executable (embedded PCK),
   x86_64.<br>Note: the Windows .exe is unsigned, so SmartScreen will show a "More info →
   Run anyway" prompt on first launch.
+- **iOS Xcode project** — a complete, buildable Xcode project is exported (icons, splash,
+  launch screen, Godot engine framework, MoltenVK, embedded PCK, bundle id
+  `com.nicholas.picopeaks`, target iOS 15.0). **Building the final `.ipa` requires macOS
+  with Xcode** — see the iOS section below.
 
 - **Mobile (Android) support** — floating joystick, touch look, and on-screen buttons
   (shoot, jump, sprint, interact, flashlight, reload, phone, camera view, chat, pause).
@@ -86,6 +90,38 @@ To publish to Google Play you need a self-owned release keystore. Do this once:
    godot --headless --path . --export-release "Android" build/pico-peaks-android-release.apk
    ```
 4. `version/code` must be **incremented for every upload** to Google Play.
+
+## iOS
+
+A final `.ipa` can **only** be built on macOS with Xcode (Apple's toolchain, and the
+engine's engine-framework link step). On Linux the export pipeline produces a complete
+Xcode project instead, which you take to a Mac. The iOS preset (`export_presets.cfg`
+`preset.3`) is configured for this:
+
+```bash
+# On Linux/macOS — generates build/pico-peaks-ios.xcodeproj + frameworks + resources
+godot --headless --path . --export-debug "iOS" build/pico-peaks-ios
+```
+
+The release ships a ready-to-build zip (`pico-peaks-ios-project.zip`) containing the
+Xcode project, Godot engine framework, MoltenVK, icons, splash, and embedded PCK.
+
+To produce an .ipa on a Mac:
+1. Install Xcode and open `pico-peaks-ios.xcodeproj`.
+2. In the **Signing & Capabilities** tab, select your Apple Developer team. The preset
+   currently contains a placeholder team id (`ABCDE12345`) — replace it, and update
+   `application/app_store_team_id` in `export_presets.cfg` before re-exporting if you
+   rebuild from source.
+3. Set a unique bundle id (`com.nicholas.picopeaks` is a placeholder — change to your
+   own reverse-domain before App Store submission) and a signing certificate +
+   provisioning profile.
+4. Product → Archive, or build to a connected device / simulator.
+5. Export the archive to an .ipa (or upload via Transporter/Xcode Organizer).
+
+Notes:
+- iOS requires an active Apple Developer account (free tier runs on your own device;
+  the $99/yr membership is needed for TestFlight / App Store distribution).
+- `version/code` (CFBundleVersion) must be incremented for every upload.
 
 ## Dedicated server
 
