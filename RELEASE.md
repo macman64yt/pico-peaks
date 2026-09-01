@@ -2,7 +2,13 @@
 
 Current release: **1.0.0**
 
+Builds: **Windows x86_64 (.exe)** · **Linux x86_64** · **Android (APK)**
+
 ## What's new in 1.0.0
+
+- **Windows + Linux desktop builds** — single self-contained executable (embedded PCK),
+  x86_64.<br>Note: the Windows .exe is unsigned, so SmartScreen will show a "More info →
+  Run anyway" prompt on first launch.
 
 - **Mobile (Android) support** — floating joystick, touch look, and on-screen buttons
   (shoot, jump, sprint, interact, flashlight, reload, phone, camera view, chat, pause).
@@ -45,6 +51,9 @@ Individual exports:
 ```bash
 # Linux x86_64 → build/pico-peaks-1.0.0
 godot --headless --path . --export-release "Linux x86_64" build/pico-peaks-1.0.0
+
+# Windows x86_64 → build/pico-peaks-1.0.0.exe
+godot --headless --path . --export-release "Windows Desktop" build/pico-peaks-1.0.0.exe
 
 # Android APK → build/pico-peaks-android.apk
 godot --headless --path . --export-debug "Android" build/pico-peaks-android.apk
