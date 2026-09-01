@@ -19,7 +19,7 @@ A tiny file, a big view. Pico Peaks is a fully procedural survival sandbox runni
 ## Requirements
 
 - Godot **4.7.1** (built against `4.7.1.stable.official`)
-- Linux x86_64 or Android 8+
+- Linux x86_64, Windows x86_64, macOS 11+ (universal: Apple Silicon + Intel), or Android 8+
 
 ## Building
 
@@ -30,6 +30,10 @@ godot --headless --path . --export-release "Linux x86_64" build/pico-peaks-1.0.0
 # Windows release exe (build/pico-peaks-1.0.0.exe)
 godot --headless --path . --export-release "Windows Desktop" build/pico-peaks-1.0.0.exe
 
+# macOS universal app (build/pico-peaks.app) + zip
+godot --headless --path . --export-release "macOS" build/pico-peaks.app
+zip -rq build/pico-peaks-macos-universal.zip build/pico-peaks.app
+
 # Android APK (debug-signed, sideload-ready)
 godot --headless --path . --export-debug "Android" build/pico-peaks-android.apk
 
@@ -37,7 +41,7 @@ godot --headless --path . --export-debug "Android" build/pico-peaks-android.apk
 godot --headless --path . --export-debug "iOS" build/pico-peaks-ios
 ```
 
-Or run `./build_release.sh`, which does both.
+Or run `./build_release.sh`, which does all desktop + Android builds.
 
 > For third-party powershell/jam: the Android export requires the Android export templates and SDK configured in the Godot editor settings. Release signing (for Google Play) is not configured — see [RELEASE.md](RELEASE.md).
 

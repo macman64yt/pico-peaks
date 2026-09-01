@@ -2,13 +2,16 @@
 
 Current release: **1.0.0**
 
-Builds: **Windows x86_64 (.exe)** · **Linux x86_64** · **Android (APK)** · **iOS (Xcode project — needs macOS to produce .ipa)**
+Builds: **Windows x86_64 (.exe)** · **Linux x86_64** · **macOS (universal .app)** · **Android (APK)** · **iOS (Xcode project — needs macOS to produce .ipa)**
 
 ## What's new in 1.0.0
 
 - **Windows + Linux desktop builds** — single self-contained executable (embedded PCK),
   x86_64.<br>Note: the Windows .exe is unsigned, so SmartScreen will show a "More info →
   Run anyway" prompt on first launch.
+- **macOS universal .app** — single bundle (arm64 + x86_64), unsigned.<br>First launch
+  will be blocked by Gatekeeper: right-click → Open → Open to run, then keep. Signing +
+  notarization for distribution requires a Mac and an Apple Developer account.
 - **iOS Xcode project** — a complete, buildable Xcode project is exported (icons, splash,
   launch screen, Godot engine framework, MoltenVK, embedded PCK, bundle id
   `com.nicholas.picopeaks`, target iOS 15.0). **Building the final `.ipa` requires macOS
@@ -59,9 +62,17 @@ godot --headless --path . --export-release "Linux x86_64" build/pico-peaks-1.0.0
 # Windows x86_64 → build/pico-peaks-1.0.0.exe
 godot --headless --path . --export-release "Windows Desktop" build/pico-peaks-1.0.0.exe
 
+# macOS universal .app → build/pico-peaks.app
+godot --headless --path . --export-release "macOS" build/pico-peaks.app
+
 # Android APK → build/pico-peaks-android.apk
 godot --headless --path . --export-debug "Android" build/pico-peaks-android.apk
 ```
+
+macOS distribution note: the .app is unsigned, so right-click the zip-extracted app and
+choose **Open** the first time (or `xattr -dr com.apple.quarantine /path/to/Pico\ Peaks.app`).
+Codesigning + notarization for wide distribution requires a Mac (Developer ID cert +
+Apple notarytool).
 
 The player-visible APK is currently **debug-signed**, which is fine for sideloading and
 distribution as an installable package, but not accepted by Google Play.
