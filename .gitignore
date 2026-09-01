@@ -1,0 +1,22 @@
+# Godot
+.godot/
+*.import
+
+# Build outputs
+build/
+dist/
+*.apk
+*.idsig
+*.pck
+
+# Screenshots / generated test images (top-level debug captures only)
+/shot*.png
+/walk*.png
+/build/icon.png
+
+# Logs
+*.log
+
+# System
+*.swp
+.DS_Store
