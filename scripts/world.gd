@@ -132,6 +132,13 @@ var _remote_bodies := {}
 var _player_names := {}
 var _npc_list: Array[Node3D] = []
 var _cars_list: Array[Node3D] = []
+var _bikes_list: Array[Node3D] = []
+var _village_path_counter := 0
+var _wolves: Array = []
+var _wolf_active := false
+var _craters: Array = []
+var _meteor_t := 200.0
+var _farm_plots: Array = []
 var _pickups := {}
 var _next_pickup_id := 0
 var _zombie_nodes := {}
@@ -206,6 +213,11 @@ var _tasks := {
 	"shop": false,
 	"shrine": false,
 	"koi": false,
+	"wolf": false,
+	"bunker": false,
+	"bike": false,
+	"meteor": false,
+	"crop": false,
 }
 var _in_storm := false
 var _prev_reactor_types := {}
@@ -384,6 +396,7 @@ func _normal_start() -> void:
 	_loading_step("Villages", 0.29)
 	_build_villages()
 	_build_houses()
+	_build_village_paths()
 	_build_dock()
 	_build_hot_spring()
 	_build_chargers()
@@ -407,6 +420,9 @@ func _normal_start() -> void:
 	await _loading_frame()
 	_loading_step("Cars & pickups", 0.8)
 	_build_cars()
+	_build_bikes()
+	_build_bunkers()
+	_build_farm_plots()
 	_build_ammo_pickups()
 	_loading_step("Villagers", 0.82)
 	_build_npcs()
@@ -532,6 +548,7 @@ func _build_world_common() -> void:
 	_loading_step("Villages", 0.38)
 	_build_villages()
 	_build_houses()
+	_build_village_paths()
 	_build_dock()
 	_build_hot_spring()
 	_build_chargers()
@@ -552,6 +569,9 @@ func _build_world_common() -> void:
 	await _loading_frame()
 	_loading_step("Cars & villagers", 0.82)
 	_build_cars()
+	_build_bikes()
+	_build_bunkers()
+	_build_farm_plots()
 	_build_npcs()
 	_build_plant_workers()
 	_loading_step("Weather", 0.88)
@@ -642,10 +662,13 @@ func _process(delta: float) -> void:
 	if _server:
 		_advance_time(delta)
 		_zombie_watch()
+		_wolf_watch()
 		_tick_grid(delta)
 		_tick_crisis(delta)
 		_tick_weather(delta)
 		_tick_tornadoes(delta)
+		_tick_wolves(delta)
+		_tick_meteors(delta)
 		_net_state_t -= delta
 		if _net_state_t <= 0.0:
 			_net_state_t = 1.0 / 15.0
@@ -672,6 +695,7 @@ func _process(delta: float) -> void:
 	_advance_time(delta)
 	_render_sky()
 	_zombie_watch()
+	_wolf_watch()
 	_tick_grid(delta)
 	_tick_crisis(delta)
 	_tick_weather(delta)
@@ -687,6 +711,9 @@ func _process(delta: float) -> void:
 	_tick_lighthouse(delta)
 	_tick_berries(delta)
 	_tick_shooting_stars(delta)
+	_tick_wolves(delta)
+	_tick_meteors(delta)
+	_update_tasks(delta)
 
 
 func _advance_time(delta: float) -> void:
@@ -1572,7 +1599,10 @@ func _tick_shooting_stars(delta: float) -> void:
 		_star_timer -= delta
 		if _star_timer <= 0.0:
 			_star_timer = randf_range(25.0, 55.0)
-			_spawn_shooting_star()
+			if randf() < 0.18 and _craters.size() < 6:
+				_spawn_meteor()
+			else:
+				_spawn_shooting_star()
 
 
 func _make_star_shard(pos: Vector3) -> void:
@@ -3440,7 +3470,13 @@ func _update_hud(delta: float) -> void:
 		if in_car:
 			var cid: int = int(_player.get("in_car_id"))
 			var boost_val := 0.0
-			if cid >= 0 and cid < _cars_list.size():
+			if cid >= 1000:
+				var bidx := cid - 1000
+				if bidx >= 0 and bidx < _bikes_list.size():
+					var bk: Node3D = _bikes_list[bidx]
+					if is_instance_valid(bk):
+						boost_val = float(bk.get("boost"))
+			elif cid >= 0 and cid < _cars_list.size():
 				var car: Node3D = _cars_list[cid]
 				if is_instance_valid(car):
 					boost_val = float(car.get("boost"))
@@ -3752,6 +3788,17 @@ func _update_tasks(_delta: float) -> void:
 			if _prev_fuels.has(idx) and fuel > 0.95 and float(_prev_fuels[idx]) < 0.6:
 				_complete_task("refuel", "Refueled a reactor")
 			_prev_fuels[idx] = fuel
+	if not _tasks["bike"]:
+		if bool(_player.get("in_car")) and not bool(_player.get("in_boat")):
+			for b in _bikes_list:
+				if is_instance_valid(b) and Vector2(_player.global_position.x, _player.global_position.z).distance_to(Vector2(b.global_position.x, b.global_position.z)) < 3.0:
+					_complete_task("bike", "Rode a dirt bike")
+					break
+	if not _tasks["bunker"]:
+		for b in get_tree().get_nodes_in_group("bunkers"):
+			if Vector2(_player.global_position.x, _player.global_position.z).distance_to(Vector2((b as Node3D).global_position.x, (b as Node3D).global_position.z)) < 8.0:
+				_complete_task("bunker", "Found the hidden bunker")
+				break
 
 
 func _post_chat(from: String, text: String) -> void:
@@ -3982,6 +4029,15 @@ func _broadcast_state() -> void:
 			continue
 		cars.append([i, c.global_position.x, c.global_position.y, c.global_position.z,
 			c.rotation.y, float(c.get("_speed"))])
+	for b in _bikes_list:
+		var bd := b as Node3D
+		if not is_instance_valid(bd):
+			continue
+		var bid: int = int(bd.get_meta("car_id", -1))
+		if bid < 0:
+			continue
+		cars.append([bid, bd.global_position.x, bd.global_position.y, bd.global_position.z,
+			bd.rotation.y, float(bd.get("_speed"))])
 	var pickups: Array = []
 	for pid in _pickups:
 		var pk: Node3D = _pickups[pid]
@@ -4111,13 +4167,21 @@ func _apply_zombie_states(zombies: Array) -> void:
 			_zombie_nodes.erase(zid)
 
 
+func _vehicle_by_cid(cid: int) -> Node3D:
+	if cid >= 1000:
+		var bidx := cid - 1000
+		if bidx >= 0 and bidx < _bikes_list.size():
+			return _bikes_list[bidx] as Node3D
+		return null
+	if cid >= 0 and cid < _cars_list.size():
+		return _cars_list[cid] as Node3D
+	return null
+
+
 func _apply_car_states(cars: Array) -> void:
 	for row in cars:
-		var i := int(row[0])
-		if i < 0 or i >= _cars_list.size():
-			continue
-		var c: Node3D = _cars_list[i]
-		if not is_instance_valid(c):
+		var c := _vehicle_by_cid(int(row[0]))
+		if c == null or not is_instance_valid(c):
 			continue
 		c.set_meta("net_target", Vector3(row[1], row[2], row[3]))
 		c.set_meta("net_rot", float(row[4]))
@@ -4422,13 +4486,14 @@ func _sv_talk(idx: int) -> void:
 
 @rpc("any_peer", "call_remote", "unreliable")
 func _sv_car_input(idx: int, gas: float, turn: float, boost: bool) -> void:
-	if not Net.is_server() or idx < 0 or idx >= _cars_list.size():
+	if not Net.is_server():
 		return
-	var c: Node3D = _cars_list[idx]
-	if is_instance_valid(c):
-		c.set("net_gas", gas)
-		c.set("net_turn", turn)
-		c.set("net_boost", boost)
+	var c := _vehicle_by_cid(idx)
+	if c == null or not is_instance_valid(c):
+		return
+	c.set("net_gas", gas)
+	c.set("net_turn", turn)
+	c.set("net_boost", boost)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -4441,11 +4506,11 @@ func _sv_boat_input(gas: float, turn: float) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _sv_enter_car(idx: int) -> void:
-	if not Net.is_server() or idx < 0 or idx >= _cars_list.size():
+	if not Net.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
 	var p: Node3D = _net_players.get(id)
-	var c: Node3D = _cars_list[idx]
+	var c := _vehicle_by_cid(idx)
 	if not p or not c or bool(p.get("in_car")):
 		return
 	if c.get("_player_in") != null:
@@ -4457,11 +4522,11 @@ func _sv_enter_car(idx: int) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func _sv_exit_car(idx: int) -> void:
-	if not Net.is_server() or idx < 0 or idx >= _cars_list.size():
+	if not Net.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
 	var p: Node3D = _net_players.get(id)
-	var c: Node3D = _cars_list[idx]
+	var c := _vehicle_by_cid(idx)
 	if p and c and bool(p.get("in_car")):
 		_net_exit_car(p, c)
 
@@ -4831,6 +4896,17 @@ func _give_player_hazmat() -> bool:
 		return false
 	_player.set("hazmat", true)
 	_post_chat("System", "You put on a hazmat suit. Radiation resistance boosted.")
+	return true
+
+
+func _give_player_ore() -> bool:
+	if _server or _client:
+		return false
+	if _player == null or not is_instance_valid(_player):
+		return false
+	_player.health = minf(float(_player.get("max_health")), float(_player.get("health")) + 8.0)
+	_player.stamina = minf(float(_player.get("max_stamina")), float(_player.get("stamina")) + 15.0)
+	_post_chat("System", "You gathered meteor ore. +8 HP, +15 stamina.")
 	return true
 
 func _make_med_pickup(pos: Vector3) -> void:
@@ -8149,6 +8225,78 @@ func _build_houses() -> void:
 	_build_campfires()
 	_build_gardens()
 
+func _build_village_paths() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 141
+	var path_mat := StandardMaterial3D.new()
+	path_mat.albedo_color = Color(0.60, 0.53, 0.40)
+	path_mat.roughness = 1.0
+	path_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var edge_mat := StandardMaterial3D.new()
+	edge_mat.albedo_color = Color(0.46, 0.38, 0.28)
+	edge_mat.roughness = 1.0
+	edge_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	for vi in _villages.size():
+		var c := _villages[vi]
+		for hs in get_tree().get_nodes_in_group("houses"):
+			var h := hs as Node3D
+			if h == null or not is_instance_valid(h):
+				continue
+			var hp := h.global_position
+			if Vector2(hp.x, hp.z).distance_to(c) > VILLAGE_HOUSE_RADIUS + 6.0:
+				continue
+			if Vector2(hp.x, hp.z).distance_to(c) < 10.0:
+				continue
+			_flatten_path(Vector2(c.x, c.y), Vector2(hp.x, hp.z), 3.4)
+			_make_path(Vector3(c.x, 0.0, c.y), hp, rng, path_mat, edge_mat)
+	_rebuild_terrain()
+
+
+func _make_path(from_v3: Vector3, to_v3: Vector3, rng: RandomNumberGenerator, path_mat: Material, edge_mat: Material) -> void:
+	var a := Vector2(from_v3.x, from_v3.z)
+	var b := Vector2(to_v3.x, to_v3.z)
+	var mid := (a + b) * 0.5 + Vector2(rng.randf_range(-2.0, 2.0), rng.randf_range(-2.0, 2.0))
+	var segs := 6
+	var pts: Array = []
+	var perps: Array = []
+	for i in range(segs + 1):
+		var t := float(i) / float(segs)
+		var inv := 1.0 - t
+		var p := a * inv * inv + mid * 2.0 * inv * t + b * t * t
+		var h := _ground_height(p.x, p.y) + 0.12
+		var dir := Vector2.ZERO
+		if i < segs:
+			var tn := float(i + 1) / float(segs)
+			var invn := 1.0 - tn
+			var pn := a * invn * invn + mid * 2.0 * invn * tn + b * tn * tn
+			dir = pn - p
+		elif segs >= 1:
+			var tp := float(i - 1) / float(segs)
+			var invp := 1.0 - tp
+			var pp := a * invp * invp + mid * 2.0 * invp * tp + b * tp * tp
+			dir = p - pp
+		var pr := Vector2(-dir.y, dir.x)
+		if pr.length() < 0.5:
+			pr = Vector2.UP
+		pr = pr.normalized()
+		pts.append(Vector3(p.x, h, p.y))
+		perps.append(Vector3(pr.x, 0.0, pr.y))
+	var node := Node3D.new()
+	node.name = "VillagePath_%d" % _village_path_counter
+	_village_path_counter += 1
+	add_child(node)
+	node.add_child(_make_ribbon_mesh(pts, perps, 1.9, 0.0, 0.02, edge_mat))
+	node.add_child(_make_ribbon_mesh(pts, perps, 1.25, 0.0, 0.06, path_mat))
+
+
+func _flatten_path(a: Vector2, b: Vector2, radius: float) -> void:
+	var segs := 8
+	for i in range(segs + 1):
+		var t := float(i) / float(segs)
+		var p := a.lerp(b, t)
+		_flatten_heights(p.x, p.y, radius, radius * 0.5)
+
+
 func _make_npc(color: Color) -> CharacterBody3D:
 	var npc := CharacterBody3D.new()
 	npc.name = "NPC"
@@ -9819,3 +9967,656 @@ func _roof_piece_count(h: Node3D) -> int:
 		if ch is MeshInstance3D and ch.is_in_group("roofs"):
 			c += 1
 	return c
+
+
+# ---------------------------------------------------------------- wolves (new)
+
+func _build_wolves() -> void:
+	if _villages.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 133
+	var v := _villages[0]
+	var count := 2 if _ram_scale() >= 1.0 else 1
+	for i in range(count + 1):
+		var ang := rng.randf() * TAU
+		var dist := rng.randf_range(140.0, 340.0)
+		var x := v.x + cos(ang) * dist
+		var z := v.y + sin(ang) * dist
+		if absf(x) > 940.0 or absf(z) > 940.0:
+			continue
+		var h := _height_at(x, z)
+		if h < 2.0 or h > 20.0:
+			continue
+		if _slope_at(x, z) > 0.4:
+			continue
+		var w := preload("res://scripts/wolf.gd").new()
+		w.name = "Wolf"
+		w.set("world", self)
+		w.position = Vector3(x, h, z)
+		add_child(w)
+		_wolves.append(w)
+
+
+func _wolf_watch() -> void:
+	if _is_night():
+		if not _wolf_active:
+			_wolf_active = true
+			_alert("System", "You hear wolves howling in the hills...")
+	else:
+		if _wolf_active:
+			_wolf_active = false
+			for w in _wolves:
+				if is_instance_valid(w) and w.has_method("do_despawn"):
+					w.call("do_despawn")
+
+
+func _tick_wolves(delta: float) -> void:
+	if _wolf_active:
+		for i in range(_wolves.size() - 1, -1, -1):
+			var w: Node = _wolves[i]
+			if w == null or not is_instance_valid(w):
+				_wolves.remove_at(i)
+				continue
+			if bool(w.get("_dead")):
+				_wolves.remove_at(i)
+	if not _wolf_active and _wolves.is_empty() and _ram_scale() >= 1.0:
+		_build_wolves()
+
+
+func _wolf_died(w: Node3D) -> void:
+	if _server or _client:
+		return
+	if not _tasks["wolf"]:
+		_complete_task("wolf", "Defeated a hungry wolf")
+
+
+# ---------------------------------------------------------------- meteors (new)
+
+func _spawn_meteor() -> void:
+	if _server or _client:
+		return
+	var center := _player.global_position if _player != null else Vector3.ZERO
+	var attempts := 0
+	while attempts < 40 and _craters.size() < 6:
+		attempts += 1
+		var ang := randf() * TAU
+		var dist := randf_range(140.0, 480.0)
+		var lx := center.x + cos(ang) * dist
+		var lz := center.z + sin(ang) * dist
+		if absf(lx) > 940.0 or absf(lz) > 940.0:
+			continue
+		var lh := _height_at(lx, lz)
+		if lh < 1.5:
+			continue
+		if _slope_at(lx, lz) > 0.5:
+			continue
+		var start := Vector3(lx + randf_range(-60.0, 60.0), randf_range(160.0, 200.0), lz + randf_range(-60.0, 60.0))
+		var impact := Vector3(lx, lh, lz)
+		var vel := (impact - start).normalized() * 90.0
+		var life := (impact - start).length() / 90.0
+		var node := Node3D.new()
+		node.name = "Meteor"
+		add_child(node)
+		var body_mat := StandardMaterial3D.new()
+		body_mat.albedo_color = Color(0.55, 0.5, 0.4)
+		body_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		body_mat.emission_enabled = true
+		body_mat.emission = Color(1.0, 0.6, 0.2) * 0.8
+		var bm := SphereMesh.new()
+		bm.radius = 1.1
+		bm.height = 2.2
+		var body := MeshInstance3D.new()
+		body.mesh = bm
+		body.material_override = body_mat
+		node.add_child(body)
+		var trail := MeshInstance3D.new()
+		var tsm := BoxMesh.new()
+		tsm.size = Vector3(0.4, 0.4, 16.0)
+		trail.mesh = tsm
+		trail.material_override = body_mat
+		trail.position = Vector3(0.0, 0.0, 8.0)
+		node.add_child(trail)
+		var lamp := OmniLight3D.new()
+		lamp.light_color = Color(1.0, 0.5, 0.2)
+		lamp.light_energy = 10.0
+		lamp.omni_range = 40.0
+		node.add_child(lamp)
+		node.set("_vel", vel)
+		node.set("_life", life)
+		node.set("_impact", impact)
+		node.set("_start", start)
+		node.set("_trail", trail)
+		node.set("_lamp", lamp)
+		node.set("_t", 0.0)
+		node.set("_impacted", false)
+		_craters.append(node)
+		return
+
+
+func _tick_meteors(delta: float) -> void:
+	for j in range(get_child_count() - 1, -1, -1):
+		var crater := get_child(j)
+		if crater != null and (crater is Node3D) and crater.is_in_group("crater"):
+			var glow: OmniLight3D = crater.get_meta("glow", null)
+			if glow and is_instance_valid(glow):
+				glow.light_energy = maxf(0.0, float(glow.light_energy) - delta * 1.2)
+	for i in range(_craters.size() - 1, -1, -1):
+		var meteor: Node = _craters[i]
+		if meteor == null or not is_instance_valid(meteor):
+			_craters.remove_at(i)
+			continue
+		var t := float(meteor.get("_t"))
+		var impacted: bool = bool(meteor.get("_impacted"))
+		if not impacted:
+			t += delta
+			meteor.set("_t", t)
+			var life: float = meteor.get("_life")
+			var impact: Vector3 = meteor.get("_impact")
+			var start: Vector3 = meteor.get("_start")
+			var age := clampf(t / life, 0.0, 1.0)
+			meteor.global_position = start.lerp(impact, age)
+			meteor.look_at(start.lerp(impact, minf(age + 0.02, 1.0)) + meteor.get("_vel").normalized(), Vector3.UP)
+			if age >= 1.0:
+				impacted = true
+				meteor.set("_impacted", true)
+				_meteor_impact(meteor, impact)
+		else:
+			var life2: float = meteor.get("_life")
+			t += delta
+			meteor.set("_t", t)
+			if t > life2 + 1.0:
+				meteor.queue_free()
+				_craters.remove_at(i)
+				continue
+			var lamp: OmniLight3D = meteor.get("_lamp")
+			if lamp:
+				lamp.light_energy = maxf(0.0, 10.0 - (t - life2) * 8.0)
+			var trail: MeshInstance3D = meteor.get("_trail")
+			if trail:
+				trail.visible = false
+
+
+func _meteor_impact(meteor: Node, impact: Vector3) -> void:
+	if _server or _client:
+		return
+	_make_crater(impact)
+	_alert("ALARM", "METEOR IMPACT — a meteor has cratered the ground near your position! Collect what it exposed.")
+	if _player and is_instance_valid(_player):
+		_quake_t = maxf(_quake_t, 2.0)
+	for i in 5:
+		var off := Vector3(randf_range(-6.0, 6.0), 0.6, randf_range(-6.0, 6.0))
+		if randf() < 0.5:
+			_make_star_shard(impact + off)
+		else:
+			_make_mineral_pickup(impact + off)
+	if not _tasks["meteor"]:
+		_complete_task("meteor", "Witnessed a meteor crash")
+
+
+func _make_crater(at: Vector3) -> void:
+	var crater := Node3D.new()
+	crater.name = "Crater"
+	crater.position = at
+	crater.set_meta("done", true)
+	crater.add_to_group("crater")
+	add_child(crater)
+	var rim_mat := StandardMaterial3D.new()
+	rim_mat.albedo_color = Color(0.22, 0.18, 0.14)
+	rim_mat.roughness = 1.0
+	for i in 16:
+		var ang := float(i) / 16.0 * TAU
+		var rr := randf_range(2.2, 3.2)
+		var lump := MeshInstance3D.new()
+		var lm := BoxMesh.new()
+		lm.size = Vector3(0.8, 0.4, 0.8)
+		lump.mesh = lm
+		lump.material_override = rim_mat
+		lump.position = Vector3(cos(ang) * rr, 0.12, sin(ang) * rr)
+		lump.rotation.y = ang
+		crater.add_child(lump)
+	var glow_lamp := OmniLight3D.new()
+	glow_lamp.light_color = Color(1.0, 0.5, 0.2)
+	glow_lamp.light_energy = 3.0
+	glow_lamp.omni_range = 12.0
+	crater.add_child(glow_lamp)
+	crater.set_meta("glow", glow_lamp)
+	var smoke_mat := StandardMaterial3D.new()
+	smoke_mat.albedo_color = Color(0.2, 0.2, 0.2, 0.5)
+	smoke_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	smoke_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var smoke_particles := GPUParticles3D.new()
+	smoke_particles.name = "Smoke"
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3.UP
+	pm.spread = 20.0
+	pm.initial_velocity_min = 1.0
+	pm.initial_velocity_max = 3.0
+	pm.gravity = Vector3(0.0, 1.0, 0.0)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.3
+	pm.scale_min = 0.5
+	pm.scale_max = 1.5
+	pm.color = Color(0.25, 0.25, 0.25, 0.6)
+	pm.lifetime_min = 2.0
+	pm.lifetime_max = 4.0
+	smoke_particles.process_material = pm
+	smoke_particles.amount = 24
+	smoke_particles.lifetime = 3.5
+	smoke_particles.one_shot = true
+	smoke_particles.material_override = smoke_mat
+	smoke_particles.position = Vector3(0.0, 0.6, 0.0)
+	crater.add_child(smoke_particles)
+	smoke_particles.emitting = true
+
+
+# ---------------------------------------------------------------- bunkers (new)
+
+func _build_bunkers() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 149
+	var placed := 0
+	var tries := 0
+	while placed < 2 and tries < 300:
+		tries += 1
+		var ang := rng.randf() * TAU
+		var dist := rng.randf_range(220.0, 480.0)
+		var x := cos(ang) * dist
+		var z := sin(ang) * dist
+		if absf(x) > 930.0 or absf(z) > 930.0:
+			continue
+		var h := _height_at(x, z)
+		if h < 2.0 or h > 18.0:
+			continue
+		if _slope_at(x, z) > 0.3:
+			continue
+		var clear := true
+		for house in get_tree().get_nodes_in_group("houses"):
+			var hp2: Vector3 = (house as Node3D).global_position
+			if Vector2(x, z).distance_to(Vector2(hp2.x, hp2.z)) < 30.0:
+				clear = false
+				break
+		if not clear:
+			continue
+		_make_bunker(Vector3(x, h, z), rng)
+		placed += 1
+
+
+func _make_bunker(pos: Vector3, rng: RandomNumberGenerator) -> Node3D:
+	var node := Node3D.new()
+	node.name = "Bunker"
+	node.add_to_group("bunkers")
+	node.position = pos
+	var concrete := StandardMaterial3D.new()
+	concrete.albedo_color = Color(0.45, 0.46, 0.48)
+	concrete.roughness = 0.95
+	var door_mat := StandardMaterial3D.new()
+	door_mat.albedo_color = Color(0.3, 0.32, 0.3)
+	door_mat.roughness = 0.9
+	var hazard_mat := StandardMaterial3D.new()
+	hazard_mat.albedo_color = Color(0.9, 0.75, 0.1)
+	hazard_mat.emission_enabled = true
+	hazard_mat.emission = Color(0.9, 0.75, 0.1) * 0.4
+	var top := MeshInstance3D.new()
+	var tm := BoxMesh.new()
+	tm.size = Vector3(9.0, 1.0, 7.0)
+	top.mesh = tm
+	top.material_override = concrete
+	top.position = Vector3(0.0, 1.0, 0.0)
+	node.add_child(top)
+	for ex in [-3.0, 3.0]:
+		for ez in [-2.0, 2.0]:
+			var lump := MeshInstance3D.new()
+			var lsm := BoxMesh.new()
+			lsm.size = Vector3(0.9, 0.5, 0.9)
+			lump.mesh = lsm
+			lump.material_override = concrete
+			lump.position = Vector3(ex, 0.3, ez)
+			lump.rotation.y = rng.randf() * TAU
+			node.add_child(lump)
+	var hatch := MeshInstance3D.new()
+	var hm := BoxMesh.new()
+	hm.size = Vector3(2.2, 0.4, 2.2)
+	hatch.mesh = hm
+	hatch.material_override = door_mat
+	hatch.position = Vector3(0.0, 1.35, 0.0)
+	node.add_child(hatch)
+	var strip := MeshInstance3D.new()
+	var sm := BoxMesh.new()
+	sm.size = Vector3(2.2, 0.1, 0.25)
+	strip.mesh = sm
+	strip.material_override = hazard_mat
+	strip.position = Vector3(0.0, 1.55, -0.2)
+	node.add_child(strip)
+	var lamp := OmniLight3D.new()
+	lamp.light_color = Color(0.8, 0.7, 0.4)
+	lamp.light_energy = 2.0
+	lamp.omni_range = 14.0
+	lamp.position = Vector3(0.0, 2.0, 0.0)
+	node.add_child(lamp)
+	var body := StaticBody3D.new()
+	var col := CollisionShape3D.new()
+	var bs := BoxShape3D.new()
+	bs.size = Vector3(9.0, 1.6, 7.0)
+	col.shape = bs
+	col.position = Vector3(0.0, 1.0, 0.0)
+	body.add_child(col)
+	node.add_child(body)
+	var ladder := MeshInstance3D.new()
+	var ldm := BoxMesh.new()
+	ldm.size = Vector3(0.1, 0.6, 0.1)
+	ladder.mesh = ldm
+	ladder.material_override = door_mat
+	ladder.position = Vector3(0.0, 1.7, 2.4)
+	node.add_child(ladder)
+	var sign := Label3D.new()
+	sign.text = "BUNKER"
+	sign.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sign.pixel_size = 0.005
+	sign.outline_size = 6
+	sign.modulate = Color(0.9, 0.9, 0.95)
+	sign.position = Vector3(0.0, 2.1, -0.6)
+	node.add_child(sign)
+	node.set_meta("done", false)
+	add_child(node)
+	node.set_meta("looted", false)
+	for i in 3:
+		var off := Vector3(rng.randf_range(-6.0, 6.0), 0.5, rng.randf_range(-6.0, 6.0))
+		var roll := rng.randf()
+		if roll < 0.4:
+			_make_gun_pickup(node.global_position + off)
+		elif roll < 0.7:
+			_make_ammo_pickup(node.global_position + off)
+		elif roll < 0.9:
+			_make_med_pickup(node.global_position + off)
+		else:
+			_make_star_shard(node.global_position + off)
+	return node
+
+
+# ---------------------------------------------------------------- farming (new)
+
+func _build_farm_plots() -> void:
+	if _gardens.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 152
+	var placed := 0
+	var tries := 0
+	var num_gardens := _gardens.size()
+	while placed < 6 and tries < 400:
+		tries += 1
+		var g: Node3D = _gardens[placed % num_gardens] as Node3D
+		if g == null:
+			continue
+		var ang := rng.randf() * TAU
+		var dist := rng.randf_range(8.0, 30.0)
+		var x := g.global_position.x + cos(ang) * dist
+		var z := g.global_position.z + sin(ang) * dist
+		var h := _height_at(x, z)
+		if h < 0.8 or h > 6.0:
+			continue
+		if _slope_at(x, z) > 0.15:
+			continue
+		var plot := preload("res://scripts/crop_plot.gd").new()
+		plot.world = self
+		plot.crop_type = rng.randi_range(0, 2)
+		plot.position = Vector3(x, h + 0.04, z)
+		add_child(plot)
+		_farm_plots.append(plot)
+		placed += 1
+
+
+func _harvest_crop(plot: Node3D) -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	if plot.global_position.distance_to(_player.global_position) > 4.5:
+		return
+	var growth := float(plot.get("growth"))
+	var crop_type := int(plot.get("crop_type"))
+	var crop_names: Array[String] = ["Wheat", "Pumpkin", "Corn"]
+	var crop_name := crop_names[crop_type] if crop_type >= 0 and crop_type < crop_names.size() else crop_names[0]
+	if growth < 1.0:
+		_post_chat("Farm", "The %s isn't ripe yet. Come back when it's glowing." % crop_name)
+		return
+	var heal := 12.0
+	var stam := 15.0
+	_player.health = minf(float(_player.get("max_health")), float(_player.get("health")) + heal)
+	_player.stamina = minf(float(_player.get("max_stamina")), float(_player.get("stamina")) + stam)
+	_post_chat("You", "You harvested the %s. +%d HP, +%d stamina." % [crop_name, int(heal), int(stam)])
+	if plot.has_method("reset_crop"):
+		plot.call("reset_crop")
+	if not _tasks["crop"]:
+		_complete_task("crop", "Harvested a crop from the farm")
+
+
+# ---------------------------------------------------------------- dirt bike (new)
+
+func _build_bikes() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 13
+	var colors := [Color(0.85, 0.3, 0.1), Color(0.2, 0.5, 0.85), Color(0.15, 0.75, 0.35)]
+	_bikes_list.clear()
+	var placed := 0
+	# Always place a bike near the start so it's quickly discoverable.
+	for try_i in 400:
+		var x := rng.randf_range(-60.0, 60.0)
+		var z := rng.randf_range(-60.0, 60.0)
+		var h := _height_at(x, z)
+		if h < 1.0 or h > 11.0 or _slope_at(x, z) > 0.3:
+			continue
+		if Vector2(x, z).distance_to(Vector2.ZERO) < 22.0:
+			continue
+		_add_bike_build(x, h, z, rng, placed, colors)
+		placed += 1
+		break
+	# Distribute the rest along highways so they're easy to spot while traveling.
+	var road_points := _collect_highway_points(6.0, 13.0)
+	while placed < 4 and not road_points.is_empty() and placed < 4:
+		var pi := rng.randi_range(0, road_points.size() - 1)
+		var x := road_points[pi].x
+		var z := road_points[pi].y
+		var h := _height_at(x, z)
+		if h < 0.8 or h > 14.0 or _slope_at(x, z) > 0.3:
+			road_points.remove_at(pi)
+			continue
+		_add_bike_build(x, h, z, rng, placed, colors)
+		road_points.remove_at(pi)
+		placed += 1
+	# Any remaining bikes scatter across the map.
+	var bike_target := int(2.0 + 2.0 * clampf(_ram_scale(), 0.5, 2.0))
+	var tries := 0
+	while placed < bike_target and tries < 400:
+		tries += 1
+		var x := rng.randf_range(-150.0, 150.0)
+		var z := rng.randf_range(-150.0, 150.0)
+		var h := _height_at(x, z)
+		if h < 1.0 or h > 14.0:
+			continue
+		if _slope_at(x, z) > 0.3:
+			continue
+		if Vector2(x, z).distance_to(Vector2.ZERO) < 18.0:
+			continue
+		_add_bike_build(x, h, z, rng, placed, colors)
+		placed += 1
+
+
+func _collect_highway_points(min_d: float, max_d: float) -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	for path in _highways:
+		var pts := path as Array
+		if pts.size() < 2:
+			continue
+		for i in range(0, pts.size(), 3):
+			out.append((pts[i] as Vector2))
+	return out
+
+
+func _add_bike_build(x: float, h: float, z: float, rng: RandomNumberGenerator, placed: int, colors: Array) -> void:
+	var bike := _make_bike(colors[placed % colors.size()])
+	bike.position = Vector3(x, h, z)
+	bike.rotation_degrees = Vector3(0.0, rng.randf() * 360.0, 0.0)
+	add_child(bike)
+	_bikes_list.append(bike)
+	bike.add_to_group("cars")
+	bike.set_meta("car_id", 1000 + placed)
+
+
+func _make_bike(color: Color) -> CharacterBody3D:
+	var bike := CharacterBody3D.new()
+	bike.name = "Bike"
+	bike.collision_layer = 1 | 2
+	bike.collision_mask = 1
+	bike.set_script(preload("res://scripts/bike.gd"))
+	bike.set("world", self)
+	var body_mat := StandardMaterial3D.new()
+	body_mat.albedo_color = color
+	body_mat.roughness = 0.5
+	var frame := MeshInstance3D.new()
+	var fm := BoxMesh.new()
+	fm.size = Vector3(0.9, 0.4, 1.1)
+	frame.mesh = fm
+	frame.material_override = body_mat
+	frame.position = Vector3(0.0, 0.45, 0.0)
+	bike.add_child(frame)
+	var dark_mat := StandardMaterial3D.new()
+	dark_mat.albedo_color = Color(0.12, 0.12, 0.14)
+	dark_mat.roughness = 0.9
+	var seat := MeshInstance3D.new()
+	var sm := BoxMesh.new()
+	sm.size = Vector3(0.3, 0.12, 0.35)
+	seat.mesh = sm
+	seat.material_override = dark_mat
+	seat.position = Vector3(0.0, 0.62, 0.18)
+	bike.add_child(seat)
+	var bar_mat := StandardMaterial3D.new()
+	bar_mat.albedo_color = Color(0.2, 0.2, 0.22)
+	bar_mat.roughness = 0.4
+	for side in [-0.33, 0.33]:
+		var handle := MeshInstance3D.new()
+		var hm := BoxMesh.new()
+		hm.size = Vector3(0.75, 0.06, 0.06)
+		handle.mesh = hm
+		handle.material_override = bar_mat
+		handle.position = Vector3(side * 0.33, 0.95, -0.25)
+		bike.add_child(handle)
+	var lamp_mat := StandardMaterial3D.new()
+	lamp_mat.albedo_color = Color(1.0, 0.9, 0.5)
+	lamp_mat.emission_enabled = true
+	lamp_mat.emission = Color(1.0, 0.9, 0.5) * 0.8
+	var headlight := OmniLight3D.new()
+	headlight.light_color = Color(1.0, 0.95, 0.8)
+	headlight.light_energy = 4.0
+	headlight.omni_range = 18.0
+	headlight.position = Vector3(0.0, 0.9, -0.8)
+	bike.add_child(headlight)
+	return bike
+
+
+func _enter_bike(bike: CharacterBody3D) -> void:
+	if _server or _client:
+		return
+	if _player == null or bool(_player.get("in_car")):
+		return
+	_current_target = null
+	_cancel_fishing()
+	var p := _player as CharacterBody3D
+	_player.set("in_car", true)
+	_player.set("in_car_id", int(bike.get_meta("car_id", -1)))
+	_player.set("_freeze", true)
+	_player.set("_third_person", false)
+	if _player.has_method("_apply_view"):
+		_player._apply_view()
+	p.collision_layer = 0
+	p.collision_mask = 0
+	var cam := _player.get_node("CameraRig/Camera") as Camera3D
+	if cam:
+		cam.current = false
+	var bike_cam := bike.get_node_or_null("Camera3D") as Camera3D
+	if bike_cam:
+		bike_cam.current = true
+	bike.set_player(_player)
+	bike.set("_enter_frame", Engine.get_physics_frames())
+	_post_chat("System", "Riding the dirt bike — WASD to move, SHIFT to boost, E to dismount.")
+
+
+func _exit_bike(bike: CharacterBody3D) -> void:
+	if _server or _client:
+		return
+	if _player == null or not bool(_player.get("in_car")):
+		return
+	_player.set("in_car", false)
+	_player.set("in_car_id", -1)
+	_player.set("_freeze", false)
+	var p := _player as CharacterBody3D
+	p.collision_layer = 1
+	p.collision_mask = 1
+	var off: Vector3 = bike.global_transform.basis * Vector3(0.0, 0.0, -2.4)
+	p.global_position = bike.global_position + off
+	p.velocity = Vector3.ZERO
+	var cam := p.get_node("CameraRig/Camera") as Camera3D
+	if cam:
+		cam.current = true
+	var bike_cam := bike.get_node_or_null("Camera3D") as Camera3D
+	if bike_cam:
+		bike_cam.current = false
+	bike.set_player(null)
+	_post_chat("System", "You got off the dirt bike.")
+
+
+func _make_mineral_pickup(pos: Vector3) -> void:
+	if _server or _client:
+		return
+	var pickup := StaticBody3D.new()
+	pickup.name = "Mineral"
+	pickup.collision_layer = 2
+	pickup.collision_mask = 0
+	pickup.set_script(preload("res://scripts/mineral_pickup.gd"))
+	pickup.set("world", self)
+	pickup.position = pos + Vector3(0.0, 0.2, 0.0)
+	var col := CollisionShape3D.new()
+	var bs := BoxShape3D.new()
+	bs.size = Vector3(0.35, 0.35, 0.35)
+	col.shape = bs
+	pickup.add_child(col)
+	var ore_mat := StandardMaterial3D.new()
+	ore_mat.albedo_color = Color(0.7, 0.6, 0.35)
+	ore_mat.emission_enabled = true
+	ore_mat.emission = Color(0.7, 0.55, 0.2)
+	ore_mat.emission_energy_multiplier = 1.5
+	var ore := MeshInstance3D.new()
+	var om := BoxMesh.new()
+	om.size = Vector3(0.28, 0.28, 0.28)
+	ore.mesh = om
+	ore.material_override = ore_mat
+	ore.position = Vector3(0.0, 0.16, 0.0)
+	pickup.add_child(ore)
+	var glow := OmniLight3D.new()
+	glow.light_color = Color(0.9, 0.7, 0.3)
+	glow.light_energy = 1.5
+	glow.omni_range = 5.0
+	pickup.add_child(glow)
+	var pid := _next_pickup_id
+	_next_pickup_id += 1
+	pickup.set_meta("pickup_id", pid)
+	pickup.add_to_group("pickups")
+	_pickups[pid] = pickup
+	add_child(pickup)
+
+
+func _make_gun_pickup(pos: Vector3) -> void:
+	if _server or _client:
+		return
+	var pickup := StaticBody3D.new()
+	pickup.name = "BunkerGun"
+	pickup.collision_layer = 2
+	pickup.collision_mask = 0
+	pickup.set_script(preload("res://scripts/gun_pickup.gd"))
+	pickup.set("world", self)
+	pickup.position = pos + Vector3(0.0, 0.25, 0.0)
+	var pid := _next_pickup_id
+	_next_pickup_id += 1
+	pickup.set_meta("pickup_id", pid)
+	pickup.add_to_group("pickups")
+	_pickups[pid] = pickup
+	add_child(pickup)

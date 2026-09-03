@@ -1,8 +1,25 @@
 # Pico Peaks — Release
 
-Current release: **1.0.0**
+Current release: **1.1.0**
 
 Builds: **Windows x86_64 (.exe)** · **Linux x86_64** · **macOS (universal .app)** · **Android (APK)** · **iOS (Xcode project — needs macOS to produce .ipa)**
+
+## What's new in 1.1.0 — "Wild Horizons"
+
+- **Meteor showers** — at night a meteor can streak across the sky and crash down,
+  leaving a glowing crater with harvestable meteorite ore and star shards. Screen shake
+  on the strike.
+- **Mountain wolves** — wild wolves patrol in the mountains and hunt the player at night,
+  fled back home come dawn. They can be shot and drop meat.
+- **Hidden bunkers** — two secret underground bunkers spawn in the world with gun, ammo,
+  medical, and star-shard loot to discover.
+- **Dirt bikes** — a fast, low-slung off-road bike (boost with sprint) for zipping across
+  the valley. Faster than the car.
+- **Farming expansion** — six crop plots in the gardens now grow wheat, pumpkin, and corn
+  over time; harvesting heals you.
+- **New objectives** — added wolf, meteor, bunker, bike, and crop fetch/kill objectives to
+  the phone's task list.
+- New scripts: `wolf.gd`, `bike.gd`, `crop_plot.gd`, `mineral_pickup.gd`.
 
 ## What's new in 1.0.0
 
@@ -56,11 +73,11 @@ the Android SDK + OpenJDK configured in `editor_settings-4.7.tres`.
 Individual exports:
 
 ```bash
-# Linux x86_64 → build/pico-peaks-1.0.0
-godot --headless --path . --export-release "Linux x86_64" build/pico-peaks-1.0.0
+# Linux x86_64 → build/pico-peaks
+godot --headless --path . --export-release "Linux x86_64" build/pico-peaks
 
-# Windows x86_64 → build/pico-peaks-1.0.0.exe
-godot --headless --path . --export-release "Windows Desktop" build/pico-peaks-1.0.0.exe
+# Windows x86_64 → build/pico-peaks.exe
+godot --headless --path . --export-release "Windows Desktop" build/pico-peaks.exe
 
 # macOS universal .app → build/pico-peaks.app
 godot --headless --path . --export-release "macOS" build/pico-peaks.app

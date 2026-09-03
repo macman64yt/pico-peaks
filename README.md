@@ -8,8 +8,14 @@ A tiny file, a big view. Pico Peaks is a fully procedural survival sandbox runni
 
 - Entirely procedural open world (infinite curved terrain, biomes, rivers, roads, villages)
 - Day/night cycle with dynamic weather: rain, wind, and tornadoes that tear up the world
+- **Meteor showers** — at night a meteor can streak down, crater the ground, and expose
+  glowing ore + star shards to collect
+- **Wildlife** — deer graze and bolt, and at night wolves howl in the hills and hunt you
 - Survival: hunger, health, crafting from star shards, farming, fishing (from a boat!), hunting
 - Buildable base with procedural structures (houses, taverns, church, reactor, towers)
+- **Hidden bunkers** — two secret underground bunkers hold gun, ammo, and medical loot
+- **Dirt bikes** — a fast, boostable two-wheeler for tearing across the valley
+- **Crop plots** — wheat, pumpkin, and corn grow in the gardens and heal you when harvested
 - Vehicles: cars, boats, bikes
 - NPC villagers who farm, wander, and talk (with push-to-talk chat, `/give`-style cash in the console)
 - LAN multiplayer: play with friends, or run a dedicated server
@@ -65,7 +71,7 @@ Join with `--connect --host <lan-ip> --port 25565`.
 Desktop:
 
 ```
-WASD   move            SHIFT  sprint / turbo
+WASD   move            SHIFT  sprint / turbo / bike boost
 SPACE  jump            LMB    shoot
 R      reload          F      flashlight
 V      camera view     P      phone / inventory
@@ -78,4 +84,6 @@ Mobile: floating joystick (left), look (right), and on-screen buttons for shoot,
 
 ## Version
 
-1.0.0 — see [RELEASE.md](RELEASE.md) for release notes and build/release details.
+1.1.0 — the "Wild Horizons" update: meteor showers, mountain wolves, hidden bunkers,
+dirt bikes, and farmable crops. See [RELEASE.md](RELEASE.md) for release notes and
+build/release details.

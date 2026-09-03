@@ -18,6 +18,11 @@ const TASKS := [
 	["shop", "Trade a fish at the market"],
 	["shrine", "Receive the east shrine's blessing"],
 	["koi", "Catch the rare golden koi"],
+	["wolf", "Defeat a hungry wolf"],
+	["meteor", "Witness a meteor crash"],
+	["bunker", "Find the hidden bunker"],
+	["bike", "Ride a dirt bike"],
+	["crop", "Harvest a crop"],
 ]
 
 var world: Node
