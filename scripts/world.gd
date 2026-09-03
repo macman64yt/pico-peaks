@@ -304,6 +304,8 @@ var _dread_audio: AudioStreamPlayer
 var _dread_phase := 0.0
 var _dread_whisper_t := 0.0
 var _dread_vol := 0.0
+var _wraith: Node3D
+var _wraith_t := 0.0
 var _radio_muted := false
 var _dock: Node3D
 var _boat: CharacterBody3D
@@ -738,6 +740,7 @@ func _process(delta: float) -> void:
 	_tick_shooting_stars(delta)
 	_tick_wolves(delta)
 	_tick_meteors(delta)
+	_tick_wraith(delta)
 	_update_tasks(delta)
 
 
@@ -2358,6 +2361,42 @@ func _tick_horror_viy(delta: float) -> void:
 	var pulse := 0.06 * sin(_horror_viy_t * 2.1)
 	var val := clampf(strength + pulse, 0.0, 1.0)
 	_horror_viy.self_modulate.a = lerpf(_horror_viy.self_modulate.a, val, clampf(delta * 3.0, 0.0, 1.0))
+
+
+func _tick_wraith(delta: float) -> void:
+	if _server or _client:
+		return
+	var night := _is_night()
+	if not night:
+		if _wraith != null and is_instance_valid(_wraith):
+			_wraith.call("despawn")
+			_wraith = null
+		return
+	if _player == null or not is_instance_valid(_player):
+		return
+	if _wraith != null and is_instance_valid(_wraith):
+		if _player.global_position.distance_to(_wraith.global_position) < 25.0:
+			_wraith.call("despawn")
+			_wraith = null
+			_post_chat("You", "The figure vanishes the instant you get near...")
+			_dread_whisper_t = -2.0
+		return
+	_wraith_t -= delta
+	if _wraith_t > 0.0:
+		return
+	_wraith_t = randf_range(28.0, 70.0)
+	if _zombies_active and randf() < 0.7:
+		var ang := randf() * TAU
+		var dist := randf_range(90.0, 210.0)
+		var x := _player.global_position.x + cos(ang) * dist
+		var z := _player.global_position.z + sin(ang) * dist
+		var h := _height_at(x, z)
+		if h < 1.0 or h > 30.0:
+			return
+		_wraith = preload("res://scripts/wraith.gd").new()
+		_wraith.set("world", self)
+		_wraith.setup(Vector3(x, h, z), _player.global_position)
+		add_child(_wraith)
 
 
 func _build_dock() -> void:
