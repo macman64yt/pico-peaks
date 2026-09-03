@@ -48,6 +48,7 @@ var health := 100.0
 var stamina := 100.0
 var thirst := 100.0
 var _dehydrate_t := 0.0
+var _thirst_warned := false
 var invert_y := false
 var ammo := 12
 var max_ammo := 12
@@ -617,7 +618,15 @@ func _physics_process(delta: float) -> void:
 		stamina = maxf(0.0, stamina - stamina_drain * delta)
 	else:
 		stamina = minf(max_stamina, stamina + stamina_regen * delta)
-	thirst = maxf(0.0, thirst - (thirst_drain * delta) * (1.5 if sprinting else 1.0))
+	var move_spd := Vector2(velocity.x, velocity.z).length()
+	if move_spd > 0.5:
+		thirst = maxf(0.0, thirst - (thirst_drain * delta) * (1.5 if sprinting else 1.0))
+	if thirst <= 35.0 and not _thirst_warned:
+		_thirst_warned = true
+		if world and world.has_method("_post_chat"):
+			world._post_chat("System", "You're getting thirsty — find a well or hot spring, fast!")
+	if thirst > 35.0:
+		_thirst_warned = false
 	if thirst <= 0.0:
 		_dehydrate_t += delta
 		if _dehydrate_t >= 1.0:
