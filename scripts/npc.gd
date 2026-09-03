@@ -104,23 +104,21 @@ func _ready() -> void:
 	_name = NAMES[randi() % NAMES.size()]
 	if is_worker:
 		_name = "%s %s" % [WORKER_NAMES[randi() % WORKER_NAMES.size()], _name]
-		for c in get_children():
-			if c is MeshInstance3D:
-				var m := (c as MeshInstance3D).mesh
-				if m is BoxMesh and (m as BoxMesh).size == Vector3(0.4, 0.12, 0.4):
-					var hm := StandardMaterial3D.new()
-					hm.albedo_color = Color(0.95, 0.78, 0.1)
-					hm.roughness = 0.4
-					(c as MeshInstance3D).material_override = hm
+		for c in _all_meshes():
+			var m := (c as MeshInstance3D).mesh
+			if m is BoxMesh and (m as BoxMesh).size == Vector3(0.4, 0.12, 0.4):
+				var hm := StandardMaterial3D.new()
+				hm.albedo_color = Color(0.95, 0.78, 0.1)
+				hm.roughness = 0.4
+				(c as MeshInstance3D).material_override = hm
 	if is_police:
 		_name = "Officer %s" % _name
-	for c in get_children():
-		if c is MeshInstance3D:
-			var m := (c as MeshInstance3D).mesh
-			if m is BoxMesh and (m as BoxMesh).size == Vector3(0.66, 1.05, 0.42):
-				_robe = c
-				_robe_mat = _robe.material_override
-				_base_color = _robe_mat.albedo_color
+	for c in _all_meshes():
+		var m := (c as MeshInstance3D).mesh
+		if m is BoxMesh and (m as BoxMesh).size == Vector3(0.66, 1.05, 0.42):
+			_robe = c
+			_robe_mat = _robe.material_override
+			_base_color = _robe_mat.albedo_color
 	if has_gun:
 		_build_gun()
 	_build_overhead()
@@ -516,6 +514,16 @@ func _draw_gun() -> void:
 	if _gun:
 		_gun.visible = true
 		_gun_out = true
+
+func _all_meshes() -> Array:
+	var out: Array = []
+	for n in get_children():
+		if n is MeshInstance3D:
+			out.append(n)
+		for sub in n.get_children():
+			if sub is MeshInstance3D:
+				out.append(sub)
+	return out
 
 func _update_robes(delta: float) -> void:
 	if _flash > 0.0:

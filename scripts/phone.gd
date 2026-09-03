@@ -23,6 +23,11 @@ const TASKS := [
 	["bunker", "Find the hidden bunker"],
 	["bike", "Ride a dirt bike"],
 	["crop", "Harvest a crop"],
+	["thirst", "Quench your thirst at a well"],
+	["bear", "Fell a mountain bear"],
+	["boar", "Take down a wild boar"],
+	["mushroom", "Forage a cluster of glowing mushrooms"],
+	["grapple", "Find a grappling hook"],
 ]
 
 var world: Node

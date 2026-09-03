@@ -85,6 +85,9 @@ var _launcher_mode := false
 var _zombies_active := false
 var _hp_bar: ProgressBar
 var _stamina_bar: ProgressBar
+var _thirst_bar: ProgressBar
+var _horror_viy: TextureRect
+var _horror_viy_t := 0.0
 var _player: Node3D
 var _spawn_pos := Vector3.ZERO
 var _grass_mi: MultiMeshInstance3D
@@ -135,10 +138,13 @@ var _cars_list: Array[Node3D] = []
 var _bikes_list: Array[Node3D] = []
 var _village_path_counter := 0
 var _wolves: Array = []
+var _wildlife: Array = []
+var _wildlife_counter := 0
 var _wolf_active := false
 var _craters: Array = []
 var _meteor_t := 200.0
 var _farm_plots: Array = []
+var _wells_loaded: Array = []
 var _pickups := {}
 var _next_pickup_id := 0
 var _zombie_nodes := {}
@@ -218,6 +224,11 @@ var _tasks := {
 	"bike": false,
 	"meteor": false,
 	"crop": false,
+	"thirst": false,
+	"bear": false,
+	"boar": false,
+	"mushroom": false,
+	"grapple": false,
 }
 var _in_storm := false
 var _prev_reactor_types := {}
@@ -246,6 +257,7 @@ var _owl_audio: AudioStreamPlayer
 var _owl_wav: AudioStreamWAV
 var _owl_timer := 8.0
 var _rain_particles: GPUParticles3D
+var _snow_particles: GPUParticles3D
 var _cricket_audio: AudioStreamPlayer
 var _cricket_t := 0.0
 var _cricket_chirp := 0.0
@@ -278,6 +290,8 @@ var _siren_wav: AudioStreamWAV
 var _siren_t := 0.0
 var _shooting_stars: GPUParticles3D
 var _prev_weather := 0
+var _blizzard_warned := false
+var _freak_snow := false
 var _campfires: Array[Node3D] = []
 var _balloon: Node3D
 var _balloon_ang := 0.0
@@ -286,12 +300,17 @@ var _zombie_audio: AudioStreamPlayer
 var _zombie_moan_t := 0.0
 var _zombie_phase := 0.0
 var _zombie_growl := 0.0
+var _dread_audio: AudioStreamPlayer
+var _dread_phase := 0.0
+var _dread_whisper_t := 0.0
+var _dread_vol := 0.0
 var _radio_muted := false
 var _dock: Node3D
 var _boat: CharacterBody3D
 var _lighthouse_light: SpotLight3D
 var _lighthouse_ang := 0.0
 var _berry_bushes: Array = []
+var _mushrooms: Array = []
 var _shrine: Node3D
 var _shrine_used_day := -1
 var _windmill_blades: Node3D
@@ -422,8 +441,10 @@ func _normal_start() -> void:
 	_build_cars()
 	_build_bikes()
 	_build_bunkers()
+	_build_wildlife()
 	_build_farm_plots()
 	_build_ammo_pickups()
+	_build_grapple_pickups()
 	_loading_step("Villagers", 0.82)
 	_build_npcs()
 	_build_plant_workers()
@@ -432,6 +453,7 @@ func _normal_start() -> void:
 	await _loading_frame()
 	_loading_step("Player", 0.91)
 	var player := _build_player()
+	_restore_world_state()
 	_build_clouds(player)
 	_loading_step("Interface", 0.97)
 	_build_hud()
@@ -571,6 +593,7 @@ func _build_world_common() -> void:
 	_build_cars()
 	_build_bikes()
 	_build_bunkers()
+	_build_wildlife()
 	_build_farm_plots()
 	_build_npcs()
 	_build_plant_workers()
@@ -586,6 +609,7 @@ func _ready_server() -> void:
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	await _build_world_common()
 	_build_ammo_pickups()
+	_build_grapple_pickups()
 	_spawn_pos = Vector3(0.0, _height_at(0.0, 0.0) + 2.2, 0.0)
 	if _night_test:
 		_time_of_day = 18.2
@@ -704,6 +728,7 @@ func _process(delta: float) -> void:
 	_tick_chargers(delta)
 	_apply_quake(delta)
 	_update_hud(delta)
+	_tick_horror_viy(delta)
 	_tick_bell(delta)
 	_tick_fishing(delta)
 	_tick_shrine(delta)
@@ -1128,11 +1153,17 @@ func _tick_weather(delta: float) -> void:
 		var new_weather := 0 if roll < 0.35 else (1 if roll < 0.6 else (2 if roll < 0.9 else 3))
 		if new_weather != _weather:
 			if new_weather >= 3:
-				_alert("System", "Storm warning: heavy rain, thunder and high winds ahead.")
+				if _season == "winter":
+					_alert("System", "WHITEOUT WARNING: a blizzard is rolling down from the peaks.")
+				elif randf() < 0.25:
+					_alert("System", "A freak snow squall funnels down from the high peaks.")
+					_freak_snow = true
 				_alert("System", "GAZETTE — STORM ON THE RANGE: Pico Peaks braces for the worst")
 				_play_siren(9.0)
-			elif new_weather >= 2:
-				_alert("System", "Rain is moving in — catchment ponds will refill cooling water.")
+			else:
+				_freak_snow = false
+				if new_weather >= 2:
+					_alert("System", "Rain is moving in — catchment ponds will refill cooling water.")
 		_weather = new_weather
 	if _weather >= 3 and _prev_weather < 3:
 		_play_siren(9.0)
@@ -1156,8 +1187,72 @@ func _tick_weather(delta: float) -> void:
 					r.set("water", minf(1.0, w + _rain_density * 0.005 * delta))
 
 
+func _is_blizzard() -> bool:
+	return _weather >= 3 and (_season == "winter" or _freak_snow)
+
+
+func _tick_blizzard(delta: float) -> void:
+	if _server or _client:
+		return
+	if _player == null or not is_instance_valid(_player):
+		return
+	if bool(_player.get("in_car")) or bool(_player.get("in_boat")):
+		return
+	var heat := float(_player.get("lamp_battery"))
+	var hp := float(_player.get("health"))
+	var thirst := float(_player.get("thirst"))
+	_player.set("thirst", maxf(0.0, thirst - delta * 0.8))
+	_player.set("health", maxf(0.0, hp - delta * (0.25 if heat > 0.05 else 0.5)))
+	if _blizzard_warned == false:
+		_blizzard_warned = true
+		_alert("System", "A whiteout blizzard howls off the range. Find shelter!")
+
+
+func _build_snow_particles() -> void:
+	var p := GPUParticles3D.new()
+	p.name = "Snow"
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(500.0, 90.0, 500.0)
+	pm.direction = Vector3(0.0, -1.0, 0.0)
+	pm.spread = 18.0
+	pm.initial_velocity_min = 2.0
+	pm.initial_velocity_max = 5.0
+	pm.gravity = Vector3(0.0, -6.0, 0.0)
+	pm.scale_min = 1.2
+	pm.scale_max = 2.6
+	pm.color = Color(0.96, 0.97, 0.98, 0.85)
+	p.process_material = pm
+	p.amount = 3000
+	p.lifetime = 3.2
+	pm.lifetime_randomness = 0.35
+	p.one_shot = false
+	p.emitting = false
+	p.visible = false
+	p.position = Vector3(0.0, 150.0, 0.0)
+	var flake := SphereMesh.new()
+	flake.radius = 0.04
+	flake.height = 0.08
+	var flake_mat := StandardMaterial3D.new()
+	flake_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	flake_mat.albedo_color = Color(0.96, 0.97, 0.98, 0.9)
+	p.draw_pass_1 = flake
+	flake.material = flake_mat
+	add_child(p)
+	p.global_position.y = 0.0
+	_snow_particles = p
+
+
 func _update_weather(delta: float) -> void:
 	_rain_density = move_toward(_rain_density, 1.0 if _weather >= 2 else 0.0, delta * 0.2)
+	var blizzard := _is_blizzard()
+	if _snow_particles:
+		_snow_particles.emitting = blizzard
+		_snow_particles.visible = blizzard
+		if _player:
+			_snow_particles.global_position = _player.global_position + Vector3(0.0, 150.0, 0.0)
+	if blizzard:
+		_tick_blizzard(delta)
 	for hub in _turbine_hubs:
 		if is_instance_valid(hub):
 			hub.rotation.x += _wind_speed * delta * 3.0
@@ -1187,6 +1282,7 @@ func _update_weather(delta: float) -> void:
 	_update_beacon(delta)
 	_update_dock(delta)
 	_update_hot_spring(delta)
+	_tick_drink(delta)
 	_update_fireflies(delta)
 	_update_lightning_bolts(delta)
 	if _hud_weather:
@@ -1359,6 +1455,7 @@ func _fill_ambience_audio(delta: float) -> void:
 	_fill_radio_audio(delta)
 	_fill_birdsong_audio(delta)
 	_fill_zombie_audio(delta)
+	_fill_dread_audio(delta)
 
 
 func _fill_cricket_audio(delta: float) -> void:
@@ -2192,6 +2289,77 @@ func _fill_zombie_audio(delta: float) -> void:
 		frames -= 1
 
 
+func _fill_dread_audio(delta: float) -> void:
+	if _dread_audio == null:
+		return
+	var night := _is_night()
+	var tod := fmod(_time_of_day, 24.0)
+	var deep := 0.0
+	if night:
+		if tod >= 23.0 or tod < 5.0:
+			deep = 1.0
+		else:
+			deep = 0.55
+	var dread := 0.0
+	if night:
+		dread = 0.5 + deep * 0.3
+		if _zombies_active:
+			dread += 0.35
+	var target_db := -60.0
+	if dread > 0.0:
+		target_db = -30.0 - (1.0 - dread) * 12.0
+	_dread_vol = lerpf(_dread_vol, dread, delta * 1.2)
+	var tgt := -60.0 + _dread_vol * 30.0
+	_dread_audio.volume_db = lerpf(_dread_audio.volume_db, tgt, delta * 2.0)
+	if _dread_vol <= 0.01:
+		return
+	var pb := _dread_audio.get_stream_playback() as AudioStreamGeneratorPlayback
+	if pb == null:
+		return
+	var frames := int(pb.get_frames_available())
+	while frames > 0:
+		_dread_phase += TAU * (48.0 + 3.0 * sin(_dread_phase * 0.7)) / 22050.0
+		var a := sin(_dread_phase)
+		var b := sin(_dread_phase * 0.5 + 1.7) * 0.6
+		var c := sin(_dread_phase * 0.25 + 3.1) * 0.5
+		var drone := (a + b + c) * 0.22
+		var wob := 0.8 + 0.35 * sin(_dread_phase * 0.05)
+		drone *= wob
+		var whisper := 0.0
+		if _dread_whisper_t < 0.0:
+			if randf() < 0.06:
+				_dread_whisper_t = randf_range(0.8, 1.8)
+		else:
+			_dread_whisper_t -= 1.0 / 22050.0
+			var wh := randf() * 2.0 - 1.0
+			wh *= lerpf(1.0, 0.0, clampf(_dread_whisper_t / 1.0, 0.0, 1.0))
+			drone += wh * 0.12
+		pb.push_frame(Vector2(drone, drone * 0.95))
+		frames -= 1
+
+
+func _tick_horror_viy(delta: float) -> void:
+	if _horror_viy == null:
+		return
+	if _server or _client:
+		return
+	var night := _is_night()
+	var tod := fmod(_time_of_day, 24.0)
+	var deep := 0.0
+	if night:
+		if tod >= 23.0 or tod < 5.0:
+			deep = 1.0
+		else:
+			deep = 0.45
+	var strength := deep
+	if _zombies_active:
+		strength = minf(1.0, strength + 0.45)
+	_horror_viy_t += delta
+	var pulse := 0.06 * sin(_horror_viy_t * 2.1)
+	var val := clampf(strength + pulse, 0.0, 1.0)
+	_horror_viy.self_modulate.a = lerpf(_horror_viy.self_modulate.a, val, clampf(delta * 3.0, 0.0, 1.0))
+
+
 func _build_dock() -> void:
 	if _villages.is_empty():
 		return
@@ -2490,6 +2658,7 @@ func _tick_berries(delta: float) -> void:
 				var reds: Node = bush.get_node_or_null("Reds")
 				if reds:
 					reds.visible = true
+	_tick_mushrooms()
 
 
 func _build_berry_bushes() -> void:
@@ -2540,6 +2709,69 @@ func _forage_berries(bush: Node3D) -> void:
 		var reds: Node = bush.get_node_or_null("Reds")
 		if reds:
 			reds.visible = false
+
+
+func _build_mushroom_forest() -> void:
+	if _villages.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 173
+	_mushrooms = []
+	var v := _villages[0]
+	var placed := 0
+	var tries := 0
+	while placed < 5 and tries < 300:
+		tries += 1
+		var ang := rng.randf() * TAU
+		var dist := rng.randf_range(18.0, 70.0)
+		var x := v.x + cos(ang) * dist
+		var z := v.y + sin(ang) * dist
+		var h := _height_at(x, z)
+		if h < 1.0 or h > 16.0:
+			continue
+		if _slope_at(x, z) > 0.22:
+			continue
+		var m: StaticBody3D = preload("res://scripts/mushroom.gd").new()
+		m.world = self
+		m.position = Vector3(x, h, z)
+		m.rotation.y = rng.randf() * TAU
+		add_child(m)
+		_mushrooms.append(m)
+		placed += 1
+
+
+func _forage_mushrooms(m: Node3D) -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	if m.global_position.distance_to(_player.global_position) > 4.5:
+		return
+	if int(m.get("shrooms")) <= 0:
+		_post_chat("Mushrooms", "This patch is picked clean. It will regrow by tomorrow.")
+		return
+	var b := int(m.get("shrooms")) - 1
+	m.set("shrooms", b)
+	m.call("_refresh_hint")
+	_player.health = minf(_player.max_health, _player.health + 10.0)
+	_player.stamina = minf(_player.max_stamina, _player.stamina + 14.0)
+	_player.thirst = minf(_player.max_thirst, _player.thirst + 8.0)
+	_post_chat("You", "You foraged some glowing mushrooms. +10 HP, +14 stamina.")
+	if not _tasks["mushroom"]:
+		_complete_task("mushroom", "Foraged a cluster of glowing mushrooms")
+	if b <= 0:
+		m.set_meta("respawn_at", _time_of_day + 12.0)
+
+
+func _tick_mushrooms() -> void:
+	if _mushrooms.is_empty():
+		return
+	for m in _mushrooms:
+		if m == null or not is_instance_valid(m):
+			continue
+		if int(m.get("shrooms")) <= 0:
+			var r: float = float(m.get_meta("respawn_at", -1.0))
+			if r >= 0.0 and _time_of_day >= r:
+				m.set("shrooms", 2)
+				m.call("_refresh_hint")
 
 
 func _tick_lighthouse(delta: float) -> void:
@@ -2797,6 +3029,33 @@ func _update_hot_spring(delta: float) -> void:
 		var mult := _spring_heal_mult()
 		_player.health = minf(_player.max_health, _player.health + delta * 2.0 * mult)
 		_player.stamina = minf(_player.max_stamina, _player.stamina + delta * 4.0 * mult)
+		_player.thirst = minf(_player.max_thirst, _player.thirst + delta * 12.0 * mult)
+
+
+func _tick_drink(delta: float) -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	if bool(_player.get("in_car")) or bool(_player.get("in_boat")):
+		return
+	var thirst := float(_player.get("thirst"))
+	if thirst >= float(_player.get("max_thirst")):
+		return
+	var drank := false
+	if _wells_loaded == null:
+		_wells_loaded = get_tree().get_nodes_in_group("wells")
+	for w in _wells_loaded:
+		if w == null or not is_instance_valid(w):
+			continue
+		var wp: Node3D = w as Node3D
+		var d := Vector2(_player.global_position.x, _player.global_position.z).distance_to(
+			Vector2(wp.global_position.x, wp.global_position.z))
+		if d < 3.5:
+			drank = true
+			break
+	if drank:
+		_player.set("thirst", minf(float(_player.get("max_thirst")), thirst + delta * 25.0))
+		if _player.global_position.y >= 0.0 and not _tasks["thirst"]:
+			_complete_task("thirst", "Quenched your thirst at a well")
 
 
 func _build_bell_wav() -> AudioStreamWAV:
@@ -2968,6 +3227,7 @@ func _init_weather() -> void:
 	streak.material = streak_mat
 	add_child(p)
 	_rain_particles = p
+	_build_snow_particles()
 
 	_rain_audio = AudioStreamPlayer.new()
 	var gen := AudioStreamGenerator.new()
@@ -2996,6 +3256,15 @@ func _init_weather() -> void:
 	_cricket_audio.volume_db = -18.0
 	add_child(_cricket_audio)
 	_cricket_audio.play()
+
+	_dread_audio = AudioStreamPlayer.new()
+	var dgen := AudioStreamGenerator.new()
+	dgen.mix_rate = 22050
+	dgen.buffer_length = 0.3
+	_dread_audio.stream = dgen
+	_dread_audio.volume_db = -60.0
+	add_child(_dread_audio)
+	_dread_audio.play()
 
 	_plant_hum_audio = AudioStreamPlayer.new()
 	var hgen := AudioStreamGenerator.new()
@@ -3408,8 +3677,9 @@ func _render_sky() -> void:
 		_env.ambient_light_energy = lerpf(0.42, 0.07, night) * (1.0 - rain * 0.3)
 		var tod := fmod(_time_of_day, 24.0)
 		var mist := maxf(exp(-pow((tod - 7.0) / 2.2, 2.0)), exp(-pow((tod - 19.0) / 2.2, 2.0)))
-		_env.volumetric_fog_emission_energy = lerpf(0.16, 0.5, rain) + mist * 0.3
-		_env.volumetric_fog_density = (0.0055 + rain * 0.02) * (1.0 + mist * 2.2)
+		var blz := 1.0 if _is_blizzard() else 0.0
+		_env.volumetric_fog_emission_energy = lerpf(0.16, 0.5, rain) + mist * 0.3 + blz * 0.9
+		_env.volumetric_fog_density = (0.0055 + rain * 0.02) * (1.0 + mist * 2.2) * (1.0 + blz * 6.0)
 	if _clouds_mat and _sun:
 		var sun_dir := (_sun.global_transform.basis * Vector3(0.0, 0.0, 1.0)).normalized()
 		_clouds_mat.set_shader_parameter("sun_dir", sun_dir)
@@ -4836,6 +5106,36 @@ func _make_ammo_pickup(pos: Vector3) -> void:
 	pickup.set("_glow", glow)
 	add_child(pickup)
 
+func _build_grapple_pickups() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 41
+	var placed := 0
+	var tries := 0
+	while placed < 3 and tries < 400:
+		tries += 1
+		var x := rng.randf_range(-90.0, 90.0)
+		var z := rng.randf_range(-90.0, 90.0)
+		var h := _height_at(x, z)
+		if h < 14.0:
+			continue
+		_make_grapple_pickup(Vector3(x, h, z))
+		placed += 1
+
+func _make_grapple_pickup(pos: Vector3) -> void:
+	var pickup := StaticBody3D.new()
+	pickup.name = "GrapplePickup"
+	pickup.collision_layer = 2
+	pickup.collision_mask = 0
+	pickup.set_script(preload("res://scripts/grapple_pickup.gd"))
+	pickup.set("world", self)
+	pickup.position = pos + Vector3(0.0, 0.1, 0.0)
+	var pid := _next_pickup_id
+	_next_pickup_id += 1
+	pickup.set_meta("pickup_id", pid)
+	pickup.add_to_group("pickups")
+	_pickups[pid] = pickup
+	add_child(pickup)
+
 func _make_hazmat_pickup(pos: Vector3) -> void:
 	var pickup := StaticBody3D.new()
 	pickup.name = "HazmatPickup"
@@ -5025,6 +5325,21 @@ func _give_player_ammo() -> bool:
 	var amt := 8
 	_player.reserve_ammo += amt
 	_post_chat("System", "Found %d rounds. Reserve: %d." % [amt, _player.reserve_ammo])
+	return true
+
+
+func _give_player_grapple() -> bool:
+	if _server or _client:
+		return false
+	if _player == null:
+		return false
+	if _player.has_grapple:
+		_post_chat("System", "You already carry a grappling hook.")
+		return false
+	_player.has_grapple = true
+	_post_chat("System", "You grab a compact grappling hook. Press [G] to swing up cliff faces.")
+	if not _tasks["grapple"]:
+		_complete_task("grapple", "Found a grappling hook")
 	return true
 
 func _on_player_crime(pos: Vector3) -> void:
@@ -6158,11 +6473,13 @@ func _scatter(rng: RandomNumberGenerator, count: int, h_min: float, h_max: float
 		out.append(_tform(Vector3(x, h, z), rng.randf() * TAU, rng.randf_range(s_min, s_max)))
 	return out
 
-func _on_stats_changed(hp: float, stamina: float) -> void:
+func _on_stats_changed(hp: float, stamina: float, thirst: float = 100.0) -> void:
 	if _hp_bar:
 		_hp_bar.value = hp
 	if _stamina_bar:
 		_stamina_bar.value = stamina
+	if _thirst_bar:
+		_thirst_bar.value = thirst
 
 func _on_player_died() -> void:
 	if _player:
@@ -6823,6 +7140,7 @@ func _build_structures() -> void:
 	_build_schools()
 	_build_deer()
 	_build_berry_bushes()
+	_build_mushroom_forest()
 
 
 func _build_deer() -> void:
@@ -7479,6 +7797,7 @@ func _make_campfire() -> Node3D:
 func _make_well() -> Node3D:
 	var node := Node3D.new()
 	node.name = "Well"
+	node.add_to_group("wells")
 	var stone_mat := StandardMaterial3D.new()
 	stone_mat.vertex_color_use_as_albedo = true
 	stone_mat.roughness = 1.0
@@ -8229,13 +8548,18 @@ func _build_village_paths() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = _world_seed + 141
 	var path_mat := StandardMaterial3D.new()
-	path_mat.albedo_color = Color(0.60, 0.53, 0.40)
+	path_mat.albedo_color = Color(0.36, 0.27, 0.18)
 	path_mat.roughness = 1.0
 	path_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	path_mat.uv1_scale = Vector3(0.5, 0.5, 0.5)
 	var edge_mat := StandardMaterial3D.new()
-	edge_mat.albedo_color = Color(0.46, 0.38, 0.28)
+	edge_mat.albedo_color = Color(0.28, 0.21, 0.14)
 	edge_mat.roughness = 1.0
 	edge_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var grass_mat := StandardMaterial3D.new()
+	grass_mat.albedo_color = Color(0.30, 0.36, 0.20)
+	grass_mat.roughness = 1.0
+	grass_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	for vi in _villages.size():
 		var c := _villages[vi]
 		for hs in get_tree().get_nodes_in_group("houses"):
@@ -8248,11 +8572,11 @@ func _build_village_paths() -> void:
 			if Vector2(hp.x, hp.z).distance_to(c) < 10.0:
 				continue
 			_flatten_path(Vector2(c.x, c.y), Vector2(hp.x, hp.z), 3.4)
-			_make_path(Vector3(c.x, 0.0, c.y), hp, rng, path_mat, edge_mat)
+			_make_path(Vector3(c.x, 0.0, c.y), hp, rng, path_mat, edge_mat, grass_mat)
 	_rebuild_terrain()
 
 
-func _make_path(from_v3: Vector3, to_v3: Vector3, rng: RandomNumberGenerator, path_mat: Material, edge_mat: Material) -> void:
+func _make_path(from_v3: Vector3, to_v3: Vector3, rng: RandomNumberGenerator, path_mat: Material, edge_mat: Material, grass_mat: Material) -> void:
 	var a := Vector2(from_v3.x, from_v3.z)
 	var b := Vector2(to_v3.x, to_v3.z)
 	var mid := (a + b) * 0.5 + Vector2(rng.randf_range(-2.0, 2.0), rng.randf_range(-2.0, 2.0))
@@ -8287,6 +8611,9 @@ func _make_path(from_v3: Vector3, to_v3: Vector3, rng: RandomNumberGenerator, pa
 	add_child(node)
 	node.add_child(_make_ribbon_mesh(pts, perps, 1.9, 0.0, 0.02, edge_mat))
 	node.add_child(_make_ribbon_mesh(pts, perps, 1.25, 0.0, 0.06, path_mat))
+	var fringe := _make_ribbon_mesh(pts, perps, 1.32, 0.0, 0.025, grass_mat)
+	fringe.name = "Fringe"
+	node.add_child(fringe)
 
 
 func _flatten_path(a: Vector2, b: Vector2, radius: float) -> void:
@@ -8314,16 +8641,88 @@ func _make_npc(color: Color) -> CharacterBody3D:
 	var robe_mat := StandardMaterial3D.new()
 	robe_mat.albedo_color = color
 	robe_mat.roughness = 0.9
+	var robe_sat := color.lerp(Color(0.5, 0.5, 0.5), 0.35)
+	var darker_mat := StandardMaterial3D.new()
+	darker_mat.albedo_color = robe_sat.darkened(0.35)
+	darker_mat.roughness = 1.0
 	var skin_mat := StandardMaterial3D.new()
 	skin_mat.albedo_color = Color(0.93, 0.76, 0.62)
-	skin_mat.roughness = 0.8
+	skin_mat.roughness = 0.7
+	var hair_mat := StandardMaterial3D.new()
+	hair_mat.albedo_color = Color(0.28, 0.2, 0.15)
+	hair_mat.roughness = 0.9
+	var sock_mat := StandardMaterial3D.new()
+	sock_mat.albedo_color = Color(0.98, 0.98, 0.98)
+	sock_mat.roughness = 0.8
+	var boot_mats := [robe_sat.darkened(0.5), Color(0.25, 0.16, 0.1)]
+	var boot_mat := StandardMaterial3D.new()
+	boot_mat.albedo_color = boot_mats[randi() % boot_mats.size()]
+	boot_mat.roughness = 0.8
+	var model := Node3D.new()
+	model.name = "Model"
+	npc.add_child(model)
 	var robe := MeshInstance3D.new()
 	var robe_mesh := BoxMesh.new()
 	robe_mesh.size = Vector3(0.66, 1.05, 0.42)
 	robe.mesh = robe_mesh
-	robe.position = Vector3(0.0, 0.78, 0.0)
 	robe.material_override = robe_mat
-	npc.add_child(robe)
+	robe.position = Vector3(0.0, 0.78, 0.0)
+	model.add_child(robe)
+	var belt := MeshInstance3D.new()
+	var belt_mesh := BoxMesh.new()
+	belt_mesh.size = Vector3(0.68, 0.1, 0.46)
+	belt.mesh = belt_mesh
+	belt.material_override = darker_mat
+	belt.position = Vector3(0.0, 0.68, 0.0)
+	model.add_child(belt)
+	var shoulder_r := MeshInstance3D.new()
+	var sh_mesh := SphereMesh.new()
+	sh_mesh.radius = 0.16
+	sh_mesh.height = 0.32
+	shoulder_r.mesh = sh_mesh
+	shoulder_r.material_override = darker_mat
+	shoulder_r.position = Vector3(-0.3, 1.28, 0.0)
+	shoulder_r.scale = Vector3(1.1, 0.7, 0.9)
+	model.add_child(shoulder_r)
+	var shoulder_l := MeshInstance3D.new()
+	shoulder_l.mesh = sh_mesh
+	shoulder_l.material_override = darker_mat
+	shoulder_l.position = Vector3(0.3, 1.28, 0.0)
+	shoulder_l.scale = Vector3(1.1, 0.7, 0.9)
+	model.add_child(shoulder_l)
+	var arm_cyl_mesh := CapsuleMesh.new()
+	arm_cyl_mesh.radius = 0.08
+	arm_cyl_mesh.height = 0.5
+	for sx in [-0.3, 0.3]:
+		var arm := MeshInstance3D.new()
+		arm.mesh = arm_cyl_mesh
+		arm.material_override = darker_mat
+		arm.position = Vector3(sx * 0.62, 0.98, 0.0)
+		model.add_child(arm)
+		var hand := MeshInstance3D.new()
+		var hand_mesh := SphereMesh.new()
+		hand_mesh.radius = 0.08
+		hand_mesh.height = 0.14
+		hand.mesh = hand_mesh
+		hand.material_override = skin_mat
+		hand.position = Vector3(sx * 0.66, 0.72, 0.0)
+		model.add_child(hand)
+	for sx in [-0.15, 0.15]:
+		var leg := MeshInstance3D.new()
+		var leg_mesh := CapsuleMesh.new()
+		leg_mesh.radius = 0.12
+		leg_mesh.height = 0.7
+		leg.mesh = leg_mesh
+		leg.material_override = sock_mat
+		leg.position = Vector3(sx, 0.34, 0.0)
+		model.add_child(leg)
+		var foot := MeshInstance3D.new()
+		var foot_mesh := BoxMesh.new()
+		foot_mesh.size = Vector3(0.18, 0.1, 0.3)
+		foot.mesh = foot_mesh
+		foot.material_override = boot_mat
+		foot.position = Vector3(sx, 0.05, 0.06)
+		model.add_child(foot)
 	var head := MeshInstance3D.new()
 	var head_mesh := SphereMesh.new()
 	head_mesh.radius = 0.16
@@ -8331,14 +8730,36 @@ func _make_npc(color: Color) -> CharacterBody3D:
 	head.mesh = head_mesh
 	head.position = Vector3(0.0, 1.42, 0.0)
 	head.material_override = skin_mat
-	npc.add_child(head)
+	model.add_child(head)
+	var eye_mat := StandardMaterial3D.new()
+	eye_mat.albedo_color = Color(0.1, 0.1, 0.12)
+	eye_mat.roughness = 0.3
+	for ey in [-0.06, 0.06]:
+		var eye := MeshInstance3D.new()
+		var eye_mesh := SphereMesh.new()
+		eye_mesh.radius = 0.025
+		eye_mesh.height = 0.04
+		eye.mesh = eye_mesh
+		eye.material_override = eye_mat
+		eye.position = Vector3(ey, 1.46, 0.13)
+		model.add_child(eye)
 	var hat := MeshInstance3D.new()
 	var hat_mesh := BoxMesh.new()
 	hat_mesh.size = Vector3(0.4, 0.12, 0.4)
 	hat.mesh = hat_mesh
 	hat.position = Vector3(0.0, 1.6, 0.0)
 	hat.material_override = robe_mat
-	npc.add_child(hat)
+	model.add_child(hat)
+	var hat_brim := MeshInstance3D.new()
+	var brim_mesh := CylinderMesh.new()
+	brim_mesh.top_radius = 0.26
+	brim_mesh.bottom_radius = 0.26
+	brim_mesh.height = 0.04
+	hat_brim.mesh = brim_mesh
+	hat_brim.material_override = darker_mat
+	hat_brim.position = Vector3(0.0, 1.56, 0.0)
+	hat_brim.rotation.x = PI / 2.0
+	model.add_child(hat_brim)
 	return npc
 
 func _build_npcs() -> void:
@@ -9339,10 +9760,14 @@ func _build_hud() -> void:
 	_stamina_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	_stamina_bar.position = Vector2(16.0, -68.0)
 	layer.add_child(_stamina_bar)
+	_thirst_bar = _make_bar(Color(0.3, 0.55, 1.0))
+	_thirst_bar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_thirst_bar.position = Vector2(16.0, -90.0)
+	layer.add_child(_thirst_bar)
 	_hud_weather = Label.new()
 	_hud_weather.text = "CLEAR   WIND 35%"
 	_hud_weather.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	_hud_weather.position = Vector2(16.0, -94.0)
+	_hud_weather.position = Vector2(16.0, -118.0)
 	_hud_weather.add_theme_font_size_override("font_size", 13)
 	_hud_weather.add_theme_color_override("font_color", Color(0.9, 0.95, 1.0, 0.8))
 	_hud_weather.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
@@ -9351,7 +9776,7 @@ func _build_hud() -> void:
 	_hud_day = Label.new()
 	_hud_day.text = "DAY 1"
 	_hud_day.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	_hud_day.position = Vector2(16.0, -112.0)
+	_hud_day.position = Vector2(16.0, -136.0)
 	_hud_day.add_theme_font_size_override("font_size", 13)
 	_hud_day.add_theme_color_override("font_color", Color(0.9, 0.95, 1.0, 0.8))
 	_hud_day.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
@@ -9360,7 +9785,7 @@ func _build_hud() -> void:
 	_hud_rad = Label.new()
 	_hud_rad.text = "RAD 0%"
 	_hud_rad.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	_hud_rad.position = Vector2(16.0, -130.0)
+	_hud_rad.position = Vector2(16.0, -154.0)
 	_hud_rad.add_theme_font_size_override("font_size", 13)
 	_hud_rad.add_theme_color_override("font_color", Color(0.45, 1.0, 0.3, 0.8))
 	_hud_rad.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
@@ -9422,6 +9847,27 @@ func _build_hud() -> void:
 	_weather_flash.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_weather_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_weather_flash)
+	_horror_viy = TextureRect.new()
+	_horror_viy.name = "HorrorVignette"
+	_horror_viy.self_modulate = Color(1.0, 1.0, 1.0, 0.0)
+	_horror_viy.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_horror_viy.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var vg := Gradient.new()
+	vg.offsets = PackedFloat32Array([0.0, 0.42, 0.58, 1.0])
+	vg.colors = PackedColorArray([Color(0.0, 0.0, 0.0, 0.0),
+		Color(0.12, 0.0, 0.0, 0.0), Color(0.24, 0.0, 0.02, 0.55), Color(0.04, 0.0, 0.01, 0.9)])
+	var vtex := GradientTexture2D.new()
+	vtex.gradient = vg
+	vtex.width = 512
+	vtex.height = 512
+	vtex.fill = GradientTexture2D.FILL_RADIAL
+	vtex.fill_from = Vector2(0.5, 0.5)
+	vtex.fill_to = Vector2(0.5, 0.0)
+	_horror_viy.texture = vtex
+	_horror_viy.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_horror_viy.stretch_mode = TextureRect.STRETCH_SCALE
+	_horror_viy.visible = true
+	layer.add_child(_horror_viy)
 
 	var hud_root := Control.new()
 	hud_root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -9628,7 +10074,76 @@ func _save_current_world() -> void:
 	var name := String(_config.get_value("world", "name", "Default"))
 	cf.set_value(name, "seed", _world_seed)
 	cf.set_value(name, "season", _season)
+	cf.set_value(name, "time", _time_of_day)
+	if _player != null and is_instance_valid(_player):
+		var p := _player.global_position
+		cf.set_value(name, "px", p.x)
+		cf.set_value(name, "py", p.y)
+		cf.set_value(name, "pz", p.z)
+		cf.set_value(name, "pyaw", float(_player.get("_yaw")))
+		cf.set_value(name, "phealth", float(_player.get("health")))
+		cf.set_value(name, "pstamina", float(_player.get("stamina")))
+		cf.set_value(name, "pthirst", float(_player.get("thirst")))
+		cf.set_value(name, "pammo", int(_player.get("ammo")))
+		cf.set_value(name, "preserve_ammo", int(_player.get("reserve_ammo")))
+		cf.set_value(name, "phas_gun", bool(_player.get("has_gun")))
+	cf.set_value(name, "fish_basket", _fish_basket)
+	cf.set_value(name, "tasks", _tasks)
+	cf.set_value(name, "task_count", _task_count)
+	var crops: Array = []
+	for plot in _farm_plots:
+		if plot == null or not is_instance_valid(plot):
+			continue
+		crops.append([int(plot.get("crop_type")), float(plot.get("growth"))])
+	cf.set_value(name, "crops", crops)
 	cf.save("user://worlds.cfg")
+
+
+func _restore_world_state() -> void:
+	if _server or _client:
+		return
+	var cf := ConfigFile.new()
+	if cf.load("user://worlds.cfg") != OK:
+		return
+	var name := String(_config.get_value("world", "name", "Default"))
+	if not cf.has_section(name):
+		return
+	if cf.has_section_key(name, "time"):
+		_time_of_day = float(cf.get_value(name, "time", _time_of_day))
+	if _player != null and is_instance_valid(_player):
+		if cf.has_section_key(name, "px"):
+			var y := float(cf.get_value(name, "py", _height_at(0.0, 0.0) + 2.0))
+			_player.global_position = Vector3(
+				float(cf.get_value(name, "px")),
+				y,
+				float(cf.get_value(name, "pz")))
+			_player.set("_yaw", float(cf.get_value(name, "pyaw", 0.0)))
+			_player.set("health", float(cf.get_value(name, "phealth", 100.0)))
+			_player.set("stamina", float(cf.get_value(name, "pstamina", 100.0)))
+			_player.set("thirst", float(cf.get_value(name, "pthirst", 100.0)))
+			_player.set("ammo", int(cf.get_value(name, "pammo", 12)))
+			_player.set("reserve_ammo", int(cf.get_value(name, "preserve_ammo", 24)))
+			_player.set("has_gun", bool(cf.get_value(name, "phas_gun", false)))
+			_player.call("_apply_rot")
+	if cf.has_section_key(name, "fish_basket"):
+		_fish_basket = int(cf.get_value(name, "fish_basket", 0))
+	if cf.has_section_key(name, "tasks"):
+		var saved_tasks = cf.get_value(name, "tasks")
+		if saved_tasks is Dictionary:
+			for k in _tasks:
+				if saved_tasks.has(k) and bool(saved_tasks[k]):
+					_tasks[k] = true
+			_task_count = int(cf.get_value(name, "task_count", _task_count))
+	var saved_crops = cf.get_value(name, "crops", [])
+	if saved_crops is Array:
+		for i in _farm_plots.size():
+			if i < saved_crops.size():
+				var row = saved_crops[i]
+				if row is Array and row.size() >= 2:
+					var plot: Node3D = _farm_plots[i]
+					if plot != null and is_instance_valid(plot):
+						plot.set("crop_type", int(row[0]))
+						plot.set("growth", float(row[1]))
 
 func _on_save_and_quit() -> void:
 	_save_current_world()
@@ -9891,6 +10406,8 @@ func _drive_test() -> void:
 		" player_pos=", _player.global_position)
 	get_tree().quit()
 
+
+
 func _zombie_test() -> void:
 	await get_tree().process_frame
 	print("[ztest] time=", _time_of_day, " zombies=", get_tree().get_nodes_in_group("zombies").size())
@@ -10029,6 +10546,55 @@ func _wolf_died(w: Node3D) -> void:
 		return
 	if not _tasks["wolf"]:
 		_complete_task("wolf", "Defeated a hungry wolf")
+
+
+func _build_wildlife() -> void:
+	if _villages.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _world_seed + 161
+	var v := _villages[0]
+	var haystack: Array = [
+		[2, 130.0, 360.0, "Bear"],
+		[1, 150.0, 380.0, "Boar"],
+	]
+	for entry in haystack:
+		var count := int(entry[0])
+		for i in range(count):
+			var ang := rng.randf() * TAU
+			var dist := rng.randf_range(float(entry[1]), float(entry[2]))
+			var x := v.x + cos(ang) * dist
+			var z := v.y + sin(ang) * dist
+			if absf(x) > 940.0 or absf(z) > 940.0:
+				continue
+			var h := _height_at(x, z)
+			if h < 1.0 or h > 22.0:
+				continue
+			if _slope_at(x, z) > 0.45:
+				continue
+			var kind := 0 if String(entry[3]) == "Bear" else 1
+			var w := preload("res://scripts/wildlife.gd").new()
+			w.name = "Wildlife_%d" % _wildlife_counter
+			_wildlife_counter += 1
+			w.set("world", self)
+			w.set("kind", kind)
+			w.position = Vector3(x, h, z)
+			add_child(w)
+			_wildlife.append(w)
+
+
+func _bear_died(w: Node3D) -> void:
+	if _server or _client:
+		return
+	if not _tasks["bear"]:
+		_complete_task("bear", "Felled a mountain bear")
+
+
+func _boar_died(w: Node3D) -> void:
+	if _server or _client:
+		return
+	if not _tasks["boar"]:
+		_complete_task("boar", "Took down a wild boar")
 
 
 # ---------------------------------------------------------------- meteors (new)
@@ -10350,13 +10916,13 @@ func _build_farm_plots() -> void:
 		if g == null:
 			continue
 		var ang := rng.randf() * TAU
-		var dist := rng.randf_range(8.0, 30.0)
+		var dist := rng.randf_range(1.5, 6.0)
 		var x := g.global_position.x + cos(ang) * dist
 		var z := g.global_position.z + sin(ang) * dist
 		var h := _height_at(x, z)
-		if h < 0.8 or h > 6.0:
+		if h < 0.5 or h > 20.0:
 			continue
-		if _slope_at(x, z) > 0.15:
+		if _slope_at(x, z) > 0.3:
 			continue
 		var plot := preload("res://scripts/crop_plot.gd").new()
 		plot.world = self

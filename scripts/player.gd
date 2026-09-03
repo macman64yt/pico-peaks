@@ -2,7 +2,7 @@ extends CharacterBody3D
 
 var world: Node
 
-signal stats_changed(health: float, stamina: float)
+signal stats_changed(health: float, stamina: float, thirst: float)
 signal died
 signal shot_fired(origin: Vector3, end: Vector3)
 signal damaged
@@ -17,8 +17,11 @@ signal crime_committed(pos: Vector3)
 
 @export var max_health := 100.0
 @export var max_stamina := 100.0
+@export var max_thirst := 100.0
 @export var stamina_drain := 22.0
 @export var stamina_regen := 16.0
+@export var thirst_drain := 2.2
+@export var dehydration_damage := 3.0
 @export var fall_damage_start := 14.0
 @export var fall_damage_factor := 5.0
 
@@ -43,11 +46,17 @@ var _step_t := 0.0
 var _dust: GPUParticles3D
 var health := 100.0
 var stamina := 100.0
+var thirst := 100.0
+var _dehydrate_t := 0.0
 var invert_y := false
 var ammo := 12
 var max_ammo := 12
 var reserve_ammo := 24
 var has_gun := false
+var has_grapple := false
+var _grapple_target := Vector3.ZERO
+var _grapple_pull := 0.0
+var _grapple_cooldown := 0.0
 var in_car := false
 var in_boat := false
 var in_car_id := -1
@@ -60,6 +69,7 @@ var _gun_flash: OmniLight3D
 var _flash_quad: MeshInstance3D
 var _muzzle: Marker3D
 var _punch_arm: MeshInstance3D
+var _player_body: Node3D
 var net_controlled := false
 var net_slave := false
 var net_input: Dictionary = {}
@@ -75,6 +85,7 @@ func _ready() -> void:
 	if not touch_mode:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_cam_origin_y = 0.12
+	_build_player_body()
 	var body_mesh := get_node_or_null("Body")
 	if body_mesh:
 		body_mesh.visible = false
@@ -103,6 +114,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("reload"):
 		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED or touch_mode:
 			_start_reload()
+	elif event.is_action_pressed("grapple"):
+		if not in_car and not _chat_open():
+			_try_grapple()
 	elif event is InputEventKey and event.pressed:
 		if event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -148,6 +162,43 @@ func _build_gun() -> void:
 	barrel.position = Vector3(0.0, 0.005, -0.21)
 	barrel.material_override = body_mat
 	_gun.add_child(barrel)
+	var stock_mat := StandardMaterial3D.new()
+	stock_mat.albedo_color = Color(0.3, 0.22, 0.14)
+	stock_mat.roughness = 0.7
+	var stock := MeshInstance3D.new()
+	var sm := BoxMesh.new()
+	sm.size = Vector3(0.045, 0.1, 0.16)
+	stock.mesh = sm
+	stock.material_override = stock_mat
+	stock.position = Vector3(0.0, 0.01, 0.17)
+	_gun.add_child(stock)
+	var guard := MeshInstance3D.new()
+	var gm := CylinderMesh.new()
+	gm.top_radius = 0.02
+	gm.bottom_radius = 0.02
+	gm.height = 0.12
+	guard.mesh = gm
+	var guard_mat := StandardMaterial3D.new()
+	guard_mat.albedo_color = Color(0.08, 0.08, 0.1)
+	guard_mat.roughness = 0.5
+	guard.material_override = guard_mat
+	guard.position = Vector3(0.0, 0.005, -0.12)
+	_gun.add_child(guard)
+	var sight := MeshInstance3D.new()
+	var sitm := BoxMesh.new()
+	sitm.size = Vector3(0.008, 0.02, 0.03)
+	sight.mesh = sitm
+	sight.material_override = body_mat
+	sight.position = Vector3(0.0, 0.07, -0.1)
+	_gun.add_child(sight)
+	var mag := MeshInstance3D.new()
+	var mgm := BoxMesh.new()
+	mgm.size = Vector3(0.03, 0.1, 0.04)
+	mag.mesh = mgm
+	mag.material_override = body_mat
+	mag.position = Vector3(0.0, -0.06, -0.02)
+	mag.rotation.x = -0.15
+	_gun.add_child(mag)
 	_muzzle = Marker3D.new()
 	_muzzle.name = "Muzzle"
 	_muzzle.position = Vector3(0.0, 0.005, -0.30)
@@ -214,6 +265,34 @@ func _start_reload() -> void:
 	if _reload_timer > 0.0 or ammo == max_ammo or reserve_ammo <= 0:
 		return
 	_reload_timer = 1.2
+
+func _try_grapple() -> void:
+	if not has_grapple:
+		return
+	if _grapple_cooldown > 0.0 or _freeze or _punch_t > 0.0:
+		return
+	if net_slave:
+		return
+	var range_max := 60.0
+	var from := camera.global_position
+	var dir := -camera.global_transform.basis.z
+	var q := PhysicsRayQueryParameters3D.create(from, from + dir * range_max, 1 | 2 | 4)
+	q.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if not hit:
+		if world and world.has_method("_post_chat"):
+			world._post_chat("You", "Your grapple hook finds no purchase.")
+		_grapple_cooldown = 0.6
+		return
+	var tgt: Vector3 = hit.position
+	_grapple_target = tgt
+	_grapple_pull = 0.35
+	_grapple_cooldown = 1.1
+	if _punch_sfx != null:
+		_punch_sfx.stream = _make_whoosh_wav()
+		_punch_sfx.pitch_scale = 1.5
+		_punch_sfx.play()
+
 
 func _punch() -> void:
 	if net_slave:
@@ -334,16 +413,128 @@ func _make_thwack_wav() -> AudioStreamWAV:
 	return wav
 
 
+func _build_player_body() -> void:
+	if _player_body != null:
+		return
+	_player_body = Node3D.new()
+	_player_body.name = "Body"
+	var jacket := StandardMaterial3D.new()
+	jacket.albedo_color = Color(0.16, 0.18, 0.22)
+	jacket.roughness = 0.7
+	var jacket_dark := StandardMaterial3D.new()
+	jacket_dark.albedo_color = Color(0.1, 0.12, 0.15)
+	jacket_dark.roughness = 1.0
+	var skin := StandardMaterial3D.new()
+	skin.albedo_color = Color(0.92, 0.74, 0.6)
+	skin.roughness = 0.7
+	var hair := StandardMaterial3D.new()
+	hair.albedo_color = Color(0.16, 0.12, 0.09)
+	hair.roughness = 0.9
+	var pants := StandardMaterial3D.new()
+	pants.albedo_color = Color(0.13, 0.13, 0.16)
+	pants.roughness = 0.9
+	var boot := StandardMaterial3D.new()
+	boot.albedo_color = Color(0.14, 0.1, 0.08)
+	boot.roughness = 0.8
+	var torso := MeshInstance3D.new()
+	var tm := BoxMesh.new()
+	tm.size = Vector3(0.46, 0.52, 0.28)
+	torso.mesh = tm
+	torso.material_override = jacket
+	torso.position = Vector3(0.0, 1.12, 0.0)
+	_player_body.add_child(torso)
+	var belt := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.48, 0.1, 0.3)
+	belt.mesh = bm
+	belt.material_override = jacket_dark
+	belt.position = Vector3(0.0, 0.9, 0.0)
+	_player_body.add_child(belt)
+	var pelvis := MeshInstance3D.new()
+	var pm := BoxMesh.new()
+	pm.size = Vector3(0.4, 0.2, 0.24)
+	pelvis.mesh = pm
+	pelvis.material_override = jacket_dark
+	pelvis.position = Vector3(0.0, 0.78, 0.0)
+	_player_body.add_child(pelvis)
+	var arm_mesh := CapsuleMesh.new()
+	arm_mesh.radius = 0.06
+	arm_mesh.height = 0.5
+	for sx in [-0.28, 0.28]:
+		var arm := MeshInstance3D.new()
+		arm.mesh = arm_mesh
+		arm.material_override = jacket
+		arm.position = Vector3(sx * 0.82, 1.16, 0.0)
+		_player_body.add_child(arm)
+		var hand := MeshInstance3D.new()
+		var hm2 := SphereMesh.new()
+		hm2.radius = 0.055
+		hm2.height = 0.1
+		hand.mesh = hm2
+		hand.material_override = skin
+		hand.position = Vector3(sx * 0.84, 0.9, 0.0)
+		_player_body.add_child(hand)
+	var leg_mesh := CapsuleMesh.new()
+	leg_mesh.radius = 0.09
+	leg_mesh.height = 0.72
+	for sx in [-0.13, 0.13]:
+		var leg := MeshInstance3D.new()
+		leg.mesh = leg_mesh
+		leg.material_override = pants
+		leg.position = Vector3(sx, 0.4, 0.0)
+		_player_body.add_child(leg)
+		var foot := MeshInstance3D.new()
+		var fm := BoxMesh.new()
+		fm.size = Vector3(0.16, 0.08, 0.28)
+		foot.mesh = fm
+		foot.material_override = boot
+		foot.position = Vector3(sx, 0.05, 0.05)
+		_player_body.add_child(foot)
+	var head := MeshInstance3D.new()
+	var hsm := SphereMesh.new()
+	hsm.radius = 0.15
+	hsm.height = 0.28
+	head.mesh = hsm
+	head.material_override = skin
+	head.position = Vector3(0.0, 1.52, 0.0)
+	_player_body.add_child(head)
+	var hair_cap := MeshInstance3D.new()
+	var hcm := SphereMesh.new()
+	hcm.radius = 0.16
+	hcm.height = 0.18
+	hair_cap.mesh = hcm
+	hair_cap.material_override = hair
+	hair_cap.position = Vector3(0.0, 1.58, -0.02)
+	hair_cap.scale.y = 0.7
+	_player_body.add_child(hair_cap)
+	add_child(_player_body)
+
+
 func _build_punch_arm() -> void:
 	_punch_arm = MeshInstance3D.new()
 	_punch_arm.name = "PunchArm"
-	var mesh := BoxMesh.new()
-	mesh.size = Vector3(0.08, 0.08, 0.36)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.25, 0.16, 0.1)
-	mat.roughness = 0.9
-	mesh.material = mat
-	_punch_arm.mesh = mesh
+	var sleeve_mat := StandardMaterial3D.new()
+	sleeve_mat.albedo_color = Color(0.16, 0.18, 0.22)
+	sleeve_mat.roughness = 0.7
+	var glove_mat := StandardMaterial3D.new()
+	glove_mat.albedo_color = Color(0.35, 0.24, 0.18)
+	glove_mat.roughness = 0.8
+	var forearm := MeshInstance3D.new()
+	var fam := CapsuleMesh.new()
+	fam.radius = 0.045
+	fam.height = 0.26
+	forearm.mesh = fam
+	forearm.material_override = sleeve_mat
+	forearm.position = Vector3(0.0, -0.05, -0.24)
+	_punch_arm.add_child(forearm)
+	var fist := MeshInstance3D.new()
+	var fistm := SphereMesh.new()
+	fistm.radius = 0.07
+	fistm.height = 0.12
+	fist.mesh = fistm
+	fist.material_override = glove_mat
+	fist.position = Vector3(0.0, -0.05, -0.42)
+	_punch_arm.add_child(fist)
 	_punch_arm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_punch_arm.position = Vector3(0.18, -0.16, -0.34)
 	_punch_arm.visible = false
@@ -366,7 +557,7 @@ func hit(dmg: int) -> void:
 		return
 	health = maxf(0.0, health - dmg)
 	damaged.emit()
-	stats_changed.emit(health, stamina)
+	stats_changed.emit(health, stamina, thirst)
 	if health <= 0.0:
 		died.emit()
 
@@ -426,6 +617,14 @@ func _physics_process(delta: float) -> void:
 		stamina = maxf(0.0, stamina - stamina_drain * delta)
 	else:
 		stamina = minf(max_stamina, stamina + stamina_regen * delta)
+	thirst = maxf(0.0, thirst - (thirst_drain * delta) * (1.5 if sprinting else 1.0))
+	if thirst <= 0.0:
+		_dehydrate_t += delta
+		if _dehydrate_t >= 1.0:
+			_dehydrate_t = 0.0
+			health = maxf(0.0, health - dehydration_damage)
+			if health <= 0.0:
+				died.emit()
 	var speed := sprint_speed if sprinting else walk_speed
 	var target := dir * speed
 
@@ -440,6 +639,13 @@ func _physics_process(delta: float) -> void:
 		velocity.y -= gravity * delta
 	if Input.is_action_just_pressed("jump") and is_on_floor():
 		velocity.y = jump_velocity
+	if _grapple_cooldown > 0.0:
+		_grapple_cooldown = maxf(0.0, _grapple_cooldown - delta)
+	if _grapple_pull > 0.0:
+		_grapple_pull = maxf(0.0, _grapple_pull - delta)
+		var pull_dir := (_grapple_target - global_position).normalized()
+		velocity = velocity.lerp(pull_dir * 26.0, clampf(delta * 6.0, 0.0, 1.0))
+		velocity.y = maxf(velocity.y, 6.0)
 	move_and_slide()
 
 	if not is_on_floor():
@@ -488,7 +694,7 @@ func _physics_process(delta: float) -> void:
 		_step_t = 0.0
 
 	if _third_person:
-		stats_changed.emit(health, stamina)
+		stats_changed.emit(health, stamina, thirst)
 		return
 	if _punch_t > 0.0:
 		_punch_t -= delta
@@ -514,7 +720,7 @@ func _physics_process(delta: float) -> void:
 			_punch_arm.visible = false
 			_punch_arm.position.z = -0.34
 			_punch_arm.rotation.x = 0.0
-	stats_changed.emit(health, stamina)
+	stats_changed.emit(health, stamina, thirst)
 
 func _world_net_ready() -> bool:
 	if world == null or not bool(world.get("_world_ready")):
@@ -574,7 +780,7 @@ func _net_client_physics(delta: float) -> void:
 		stamina = minf(max_stamina, stamina + stamina_regen * delta)
 	velocity.y -= gravity * delta
 	move_and_slide()
-	stats_changed.emit(health, stamina)
+	stats_changed.emit(health, stamina, thirst)
 
 func _net_send_car_input() -> void:
 	if bool(get("in_boat")):
@@ -608,7 +814,7 @@ func respawn(pos: Vector3) -> void:
 	_fall_v = 0.0
 	global_position = pos
 	velocity = Vector3.ZERO
-	stats_changed.emit(health, stamina)
+	stats_changed.emit(health, stamina, thirst)
 
 func _apply_view() -> void:
 	if _third_person:
